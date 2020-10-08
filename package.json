@@ -222,7 +222,7 @@
     "@types/traverse": "0.6.32",
     "@types/xmldoc": "1.1.5",
     "@typescript-eslint/eslint-plugin": "4.0.1",
-    "@typescript-eslint/parser": "4.0.1",
+    "@typescript-eslint/parser": "4.1.1",
     "aws-sdk-mock": "5.1.0",
     "babel-jest": "26.3.0",
     "babel-plugin-dynamic-import-node": "2.3.3",
