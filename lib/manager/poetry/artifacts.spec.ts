@@ -2,7 +2,7 @@ import { exec as _exec } from 'child_process';
 import { readFileSync } from 'fs';
 import _fs from 'fs-extra';
 import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../test/execUtil';
+import { envMock, mockExecAll } from '../../../test/exec-util';
 import { mocked } from '../../../test/util';
 import * as _datasource from '../../datasource';
 import { setExecConfig } from '../../util/exec';
@@ -135,7 +135,6 @@ describe('.updateArtifacts()', () => {
     await setExecConfig({
       ...config,
       binarySource: BinarySource.Docker,
-      dockerUser: 'foobar',
     });
     fs.readFile.mockResolvedValueOnce('[metadata]\n' as any);
     const execSnapshots = mockExecAll(exec);
@@ -151,18 +150,20 @@ describe('.updateArtifacts()', () => {
         newPackageFileContent: '{}',
         config: {
           ...config,
-          compatibility: { python: '~2.7 || ^3.4' },
+          constraints: {
+            python: '~2.7 || ^3.4',
+            poetry: 'poetry>=1.1.2 setuptools poetry-dynamic-versioning>1',
+          },
         },
       })
     ).not.toBeNull();
     expect(execSnapshots).toMatchSnapshot();
   });
-  it('returns updated poetry.lock using docker (constaints)', async () => {
+  it('returns updated poetry.lock using docker (constraints)', async () => {
     jest.spyOn(docker, 'removeDanglingContainers').mockResolvedValueOnce();
     await setExecConfig({
       ...config,
       binarySource: BinarySource.Docker,
-      dockerUser: 'foobar',
     });
     fs.readFile.mockResolvedValueOnce(
       '[metadata]\npython-versions = "~2.7 || ^3.4"' as any
@@ -180,7 +181,7 @@ describe('.updateArtifacts()', () => {
         newPackageFileContent: '{}',
         config: {
           ...config,
-          compatibility: { poetry: 'poetry>=1.0' },
+          constraints: { poetry: 'poetry>=1.0' },
         },
       })
     ).not.toBeNull();

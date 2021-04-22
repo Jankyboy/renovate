@@ -1,5 +1,6 @@
 import { getPkgReleases } from '..';
-import * as httpMock from '../../../test/httpMock';
+import * as httpMock from '../../../test/http-mock';
+import { getName } from '../../../test/util';
 import * as rubyVersioning from '../../versioning/ruby';
 import railsInfo from './__fixtures__/rails/info.json';
 import railsVersions from './__fixtures__/rails/versions.json';
@@ -25,7 +26,7 @@ const rubygemsOrgVersions = `created_at: 2017-03-27T04:38:13+00:00
 1pass -0.1.2 abcdef
 21-day-challenge-countdown 0.1.0,0.1.1,0.1.2 57e8873fe713063f4e54e85bbbd709bb`;
 
-describe('datasource/rubygems', () => {
+describe(getName(__filename), () => {
   describe('getReleases', () => {
     const SKIP_CACHE = process.env.RENOVATE_SKIP_CACHE;
 
@@ -166,6 +167,26 @@ describe('datasource/rubygems', () => {
         .reply(200, null);
       expect(await getPkgReleases(params)).toBeNull();
       expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('falls back to info when version request fails', async () => {
+      httpMock
+        .scope('https://thirdparty.com/')
+        .get('/api/v1/gems/rails.json')
+        .reply(200, railsInfo)
+        .get('/api/v1/versions/rails.json')
+        .reply(400, {});
+      const res = await getPkgReleases(params);
+      expect(res.releases).toHaveLength(1);
+      expect(res.releases[0].version).toBe(railsInfo.version);
+    });
+    it('errors when version request fails with anything other than 400 or 404', async () => {
+      httpMock
+        .scope('https://thirdparty.com/')
+        .get('/api/v1/gems/rails.json')
+        .reply(200, railsInfo)
+        .get('/api/v1/versions/rails.json')
+        .reply(500, {});
+      expect(await getPkgReleases(params)).toBeNull();
     });
   });
 });

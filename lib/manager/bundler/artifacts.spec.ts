@@ -1,6 +1,6 @@
 import { exec as _exec } from 'child_process';
 import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../test/execUtil';
+import { envMock, mockExecAll } from '../../../test/exec-util';
 import { fs, git, mocked } from '../../../test/util';
 import * as _datasource from '../../datasource';
 import { setUtilConfig } from '../../util';
@@ -38,7 +38,6 @@ describe('bundler.updateArtifacts()', () => {
       // `join` fixes Windows CI
       localDir: join('/tmp/github/some/repo'),
       cacheDir: join('/tmp/cache'),
-      dockerUser: 'foobar',
     };
 
     env.getChildProcessEnv.mockReturnValue(envMock.basic);
@@ -150,7 +149,7 @@ describe('bundler.updateArtifacts()', () => {
       ).toMatchSnapshot();
       expect(execSnapshots).toMatchSnapshot();
     });
-    it('compatibility options', async () => {
+    it('constraints options', async () => {
       fs.readLocalFile.mockResolvedValueOnce('Current Gemfile.lock');
       fs.writeLocalFile.mockResolvedValueOnce(null as never);
       datasource.getPkgReleases.mockResolvedValueOnce({
@@ -173,8 +172,7 @@ describe('bundler.updateArtifacts()', () => {
           config: {
             ...config,
             binarySource: BinarySource.Docker,
-            dockerUser: 'foobar',
-            compatibility: {
+            constraints: {
               ruby: '1.2.5',
               bundler: '3.2.1',
             },
@@ -183,7 +181,7 @@ describe('bundler.updateArtifacts()', () => {
       ).toMatchSnapshot();
       expect(execSnapshots).toMatchSnapshot();
     });
-    it('invalid compatibility options', async () => {
+    it('invalid constraints options', async () => {
       fs.readLocalFile.mockResolvedValueOnce('Current Gemfile.lock');
       fs.writeLocalFile.mockResolvedValueOnce(null as never);
       datasource.getPkgReleases.mockResolvedValueOnce({
@@ -206,8 +204,7 @@ describe('bundler.updateArtifacts()', () => {
           config: {
             ...config,
             binarySource: BinarySource.Docker,
-            dockerUser: 'foobar',
-            compatibility: {
+            constraints: {
               ruby: 'foo',
               bundler: 'bar',
             },

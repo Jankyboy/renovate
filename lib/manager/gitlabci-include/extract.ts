@@ -3,9 +3,7 @@ import yaml from 'js-yaml';
 import * as datasourceGitlabTags from '../../datasource/gitlab-tags';
 import { logger } from '../../logger';
 import { SkipReason } from '../../types';
-import { readLocalFile } from '../../util/fs';
-import { ExtractConfig, PackageDependency, PackageFile } from '../common';
-import * as gitlabci from '../gitlabci/extract';
+import type { ExtractConfig, PackageDependency, PackageFile } from '../types';
 
 function extractDepFromIncludeFile(includeObj: {
   file: any;
@@ -25,22 +23,15 @@ function extractDepFromIncludeFile(includeObj: {
   return dep;
 }
 
-async function extractDepsFromIncludeLocal(includeObj: {
-  local: string;
-}): Promise<PackageDependency[] | null> {
-  const content = await readLocalFile(includeObj.local, 'utf8');
-  const deps = gitlabci.extractPackageFile(content)?.deps;
-  return deps;
-}
-
-export async function extractPackageFile(
+export function extractPackageFile(
   content: string,
   _packageFile: string,
   config: ExtractConfig
-): Promise<PackageFile | null> {
+): PackageFile | null {
   const deps: PackageDependency[] = [];
   try {
-    const doc = yaml.safeLoad(content, { json: true });
+    // TODO: fix me
+    const doc = yaml.safeLoad(content, { json: true }) as any;
     if (doc?.include && is.array(doc.include)) {
       for (const includeObj of doc.include) {
         if (includeObj.file && includeObj.project) {
@@ -49,13 +40,6 @@ export async function extractPackageFile(
             dep.registryUrls = [config.endpoint.replace(/\/api\/v4\/?/, '')];
           }
           deps.push(dep);
-        } else if (includeObj.local) {
-          const includedDeps = await extractDepsFromIncludeLocal(includeObj);
-          if (includedDeps) {
-            for (const includedDep of includedDeps) {
-              deps.push(includedDep);
-            }
-          }
         }
       }
     }

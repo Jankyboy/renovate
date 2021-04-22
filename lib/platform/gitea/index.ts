@@ -1,25 +1,23 @@
 import URL from 'url';
 import is from '@sindresorhus/is';
-import { configFileNames } from '../../config/app-strings';
-import { RenovateConfig } from '../../config/common';
+import { lt } from 'semver';
 import {
   REPOSITORY_ACCESS_FORBIDDEN,
   REPOSITORY_ARCHIVED,
   REPOSITORY_BLOCKED,
   REPOSITORY_CHANGED,
-  REPOSITORY_DISABLED,
   REPOSITORY_EMPTY,
   REPOSITORY_MIRRORED,
 } from '../../constants/error-messages';
 import { PLATFORM_TYPE_GITEA } from '../../constants/platforms';
 import { logger } from '../../logger';
-import { BranchStatus, PrState } from '../../types';
+import { BranchStatus, PrState, VulnerabilityAlert } from '../../types';
 import * as git from '../../util/git';
 import * as hostRules from '../../util/host-rules';
 import { setBaseUrl } from '../../util/http/gitea';
 import { sanitize } from '../../util/sanitize';
 import { ensureTrailingSlash } from '../../util/url';
-import {
+import type {
   BranchStatusConfig,
   CreatePRConfig,
   EnsureCommentConfig,
@@ -34,10 +32,10 @@ import {
   RepoParams,
   RepoResult,
   UpdatePrConfig,
-  VulnerabilityAlert,
-} from '../common';
+} from '../types';
 import { smartTruncate } from '../utils/pr-body';
 import * as helper from './gitea-helper';
+import { smartLinks } from './utils';
 
 interface GiteaRepoConfig {
   repository: string;
@@ -48,13 +46,14 @@ interface GiteaRepoConfig {
   issueList: Promise<Issue[]> | null;
   labelList: Promise<helper.Label[]> | null;
   defaultBranch: string;
+  cloneSubmodules: boolean;
 }
 
 const defaults = {
   hostType: PLATFORM_TYPE_GITEA,
   endpoint: 'https://gitea.com/api/v1/',
+  version: '0.0.0',
 };
-const defaultConfigFile = configFileNames[0];
 
 let config: GiteaRepoConfig = {} as any;
 let botUserID: number;
@@ -98,7 +97,7 @@ function toRenovatePR(data: helper.PR): Pr | null {
     title: data.title,
     body: data.body,
     sha: data.head.sha,
-    branchName: data.head.label,
+    sourceBranch: data.head.label,
     targetBranch: data.base.ref,
     sourceRepo: data.head.repo.full_name,
     createdAt: data.created_at,
@@ -158,9 +157,9 @@ function getLabelList(): Promise<helper.Label[]> {
         return [];
       });
 
-    config.labelList = Promise.all([repoLabels, orgLabels]).then((labels) => {
-      return [].concat(...labels);
-    });
+    config.labelList = Promise.all([repoLabels, orgLabels]).then((labels) =>
+      [].concat(...labels)
+    );
   }
 
   return config.labelList;
@@ -194,6 +193,7 @@ const platform: Platform = {
       gitAuthor = `${user.full_name || user.username} <${user.email}>`;
       botUserID = user.id;
       botUserName = user.username;
+      defaults.version = await helper.getVersion({ token });
     } catch (err) {
       logger.debug(
         { err },
@@ -208,30 +208,33 @@ const platform: Platform = {
     };
   },
 
-  async getJsonFile(fileName: string): Promise<any | null> {
-    try {
-      const contents = await helper.getRepoContents(
-        fileName,
-        defaultConfigFile,
-        config.defaultBranch
-      );
-      return JSON.parse(contents.contentString);
-    } catch (err) /* istanbul ignore next */ {
-      return null;
-    }
+  async getRawFile(
+    fileName: string,
+    repo: string = config.repository
+  ): Promise<string | null> {
+    const contents = await helper.getRepoContents(repo, fileName);
+    return contents.contentString;
+  },
+
+  async getJsonFile(
+    fileName: string,
+    repo: string = config.repository
+  ): Promise<any | null> {
+    const raw = await platform.getRawFile(fileName, repo);
+    return JSON.parse(raw);
   },
 
   async initRepo({
     repository,
     localDir,
-    optimizeForDisabled,
+    cloneSubmodules,
   }: RepoParams): Promise<RepoResult> {
-    let renovateConfig: RenovateConfig;
     let repo: helper.Repo;
 
     config = {} as any;
     config.repository = repository;
     config.localDir = localDir;
+    config.cloneSubmodules = cloneSubmodules;
 
     // Attempt to fetch information about repository
     try {
@@ -284,14 +287,6 @@ const platform: Platform = {
     config.defaultBranch = repo.default_branch;
     logger.debug(`${repository} default branch = ${config.defaultBranch}`);
 
-    // Optionally check if Renovate is disabled by attempting to fetch default configuration file
-    if (optimizeForDisabled) {
-      renovateConfig = await platform.getJsonFile(config.repository);
-      if (renovateConfig && renovateConfig.enabled === false) {
-        throw new Error(REPOSITORY_DISABLED);
-      }
-    }
-
     // Find options for current host and determine Git endpoint
     const opts = hostRules.find({
       hostType: PLATFORM_TYPE_GITEA,
@@ -322,7 +317,10 @@ const platform: Platform = {
   async getRepos(): Promise<string[]> {
     logger.debug('Auto-discovering Gitea repositories');
     try {
-      const repos = await helper.searchRepos({ uid: botUserID });
+      const repos = await helper.searchRepos({
+        uid: botUserID,
+        archived: false,
+      });
       return repos.map((r) => r.full_name);
     } catch (err) {
       logger.error({ err }, 'Gitea getRepos() error');
@@ -467,7 +465,7 @@ const platform: Platform = {
     const pr = prList.find(
       (p) =>
         p.sourceRepo === config.repository &&
-        p.branchName === branchName &&
+        p.sourceBranch === branchName &&
         matchesState(p.state, state) &&
         (!title || p.title === title)
     );
@@ -479,14 +477,14 @@ const platform: Platform = {
   },
 
   async createPr({
-    branchName,
+    sourceBranch,
     targetBranch,
     prTitle: title,
     prBody: rawBody,
     labels: labelNames,
   }: CreatePRConfig): Promise<Pr> {
     const base = targetBranch;
-    const head = branchName;
+    const head = sourceBranch;
     const body = sanitize(rawBody);
 
     logger.debug(`Creating pull request: ${title} (${head} => ${base})`);
@@ -518,13 +516,13 @@ const platform: Platform = {
       // would cause a HTTP 409 conflict error, which we hereby gracefully handle.
       if (err.statusCode === 409) {
         logger.warn(
-          `Attempting to gracefully recover from 409 Conflict response in createPr(${title}, ${branchName})`
+          `Attempting to gracefully recover from 409 Conflict response in createPr(${title}, ${sourceBranch})`
         );
 
         // Refresh cached PR list and search for pull request with matching information
         config.prList = null;
         const pr = await platform.findPr({
-          branchName,
+          branchName: sourceBranch,
           state: PrState.Open,
         });
 
@@ -532,7 +530,7 @@ const platform: Platform = {
         if (pr) {
           if (pr.title !== title || pr.body !== body) {
             logger.debug(
-              `Recovered from 409 Conflict, but PR for ${branchName} is outdated. Updating...`
+              `Recovered from 409 Conflict, but PR for ${sourceBranch} is outdated. Updating...`
             );
             await platform.updatePr({
               number: pr.number,
@@ -543,7 +541,7 @@ const platform: Platform = {
             pr.body = body;
           } else {
             logger.debug(
-              `Recovered from 409 Conflict and PR for ${branchName} is up-to-date`
+              `Recovered from 409 Conflict and PR for ${sourceBranch} is up-to-date`
             );
           }
 
@@ -607,12 +605,14 @@ const platform: Platform = {
   async ensureIssue({
     title,
     reuseTitle,
-    body,
+    body: content,
     shouldReOpen,
     once,
   }: EnsureIssueConfig): Promise<'updated' | 'created' | null> {
     logger.debug(`ensureIssue(${title})`);
     try {
+      const body = smartLinks(content);
+
       const issueList = await platform.getIssueList();
       let issues = issueList.filter((i) => i.title === title);
       if (!issues.length) {
@@ -737,14 +737,14 @@ const platform: Platform = {
           { repository: config.repository, issue, comment: c.id },
           'Comment added'
         );
-      } else if (comment.body !== body) {
+      } else if (comment.body === body) {
+        logger.debug(`Comment #${comment.id} is already up-to-date`);
+      } else {
         const c = await helper.updateComment(config.repository, issue, body);
         logger.debug(
           { repository: config.repository, issue, comment: c.id },
           'Comment updated'
         );
-      } else {
-        logger.debug(`Comment #${comment.id} is already up-to-date`);
       }
 
       return true;
@@ -799,18 +799,24 @@ const platform: Platform = {
     });
   },
 
-  addReviewers(number: number, reviewers: string[]): Promise<void> {
-    // Adding reviewers to a PR through API is not supported by Gitea as of today
-    // See tracking issue: https://github.com/go-gitea/gitea/issues/5733
-    logger.debug(
-      `Updating reviewers '${reviewers?.join(', ')}' on Pull Request #${number}`
-    );
-    logger.warn('Unimplemented in Gitea: Reviewers');
-    return Promise.resolve();
+  async addReviewers(number: number, reviewers: string[]): Promise<void> {
+    logger.debug(`Adding reviewers '${reviewers?.join(', ')}' to #${number}`);
+    if (lt(defaults.version, '1.14.0')) {
+      logger.debug(
+        { version: defaults.version },
+        'Adding reviewer not yet supported.'
+      );
+      return;
+    }
+    try {
+      await helper.requestPrReviewers(config.repository, number, { reviewers });
+    } catch (err) {
+      logger.warn({ err, number, reviewers }, 'Failed to assign reviewer');
+    }
   },
 
-  getPrBody(prBody: string): string {
-    return smartTruncate(prBody, 1000000);
+  massageMarkdown(prBody: string): string {
+    return smartTruncate(smartLinks(prBody), 1000000);
   },
 
   getVulnerabilityAlerts(): Promise<VulnerabilityAlert[]> {
@@ -833,10 +839,11 @@ export const {
   getBranchPr,
   getBranchStatus,
   getBranchStatusCheck,
+  getRawFile,
   getJsonFile,
   getIssueList,
   getPr,
-  getPrBody,
+  massageMarkdown,
   getPrList,
   getRepoForceRebase,
   getRepos,

@@ -1,7 +1,8 @@
 // TODO fix mocks
 import nock from 'nock';
 import { Platform, RepoParams } from '..';
-import * as httpMock from '../../../test/httpMock';
+import * as httpMock from '../../../test/http-mock';
+import { getName } from '../../../test/util';
 import {
   REPOSITORY_ARCHIVED,
   REPOSITORY_CHANGED,
@@ -9,21 +10,26 @@ import {
   REPOSITORY_EMPTY,
   REPOSITORY_MIRRORED,
 } from '../../constants/error-messages';
+import { logger as _logger } from '../../logger';
 import { BranchStatus, PrState } from '../../types';
 import * as _git from '../../util/git';
 import * as _hostRules from '../../util/host-rules';
 
 const gitlabApiHost = 'https://gitlab.com';
 
-describe('platform/gitlab', () => {
+describe(getName(__filename), () => {
   let gitlab: Platform;
   let hostRules: jest.Mocked<typeof _hostRules>;
   let git: jest.Mocked<typeof _git>;
+  let logger: jest.Mocked<typeof _logger>;
+
   beforeEach(async () => {
     // reset module
     jest.resetModules();
     jest.resetAllMocks();
     gitlab = await import('.');
+    jest.mock('../../logger');
+    logger = (await import('../../logger')).logger as never;
     jest.mock('../../util/host-rules');
     jest.mock('delay');
     hostRules = require('../../util/host-rules');
@@ -40,6 +46,28 @@ describe('platform/gitlab', () => {
     httpMock.reset();
     httpMock.setup();
   });
+  afterEach(() => {
+    httpMock.reset();
+  });
+
+  async function initFakePlatform(version: string) {
+    httpMock
+      .scope(gitlabApiHost)
+      .get('/api/v4/user')
+      .reply(200, {
+        email: 'a@b.com',
+        name: 'Renovate Bot',
+      })
+      .get('/api/v4/version')
+      .reply(200, {
+        version: `${version}-ee`,
+      });
+
+    await gitlab.initPlatform({
+      token: 'some-token',
+      endpoint: undefined,
+    });
+  }
 
   describe('initPlatform()', () => {
     it(`should throw if no token`, async () => {
@@ -60,6 +88,9 @@ describe('platform/gitlab', () => {
         email: 'a@b.com',
         name: 'Renovate Bot',
       });
+      httpMock.scope(gitlabApiHost).get('/api/v4/version').reply(200, {
+        version: '13.3.6-ee',
+      });
       expect(
         await gitlab.initPlatform({
           token: 'some-token',
@@ -69,13 +100,21 @@ describe('platform/gitlab', () => {
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
     it(`should accept custom endpoint`, async () => {
-      httpMock.scope('https://gitlab.renovatebot.com').get('/user').reply(200, {
-        email: 'a@b.com',
-        name: 'Renovate Bot',
-      });
+      const endpoint = 'https://gitlab.renovatebot.com';
+      httpMock
+        .scope(endpoint)
+        .get('/user')
+        .reply(200, {
+          email: 'a@b.com',
+          name: 'Renovate Bot',
+        })
+        .get('/version')
+        .reply(200, {
+          version: '13.3.6-ee',
+        });
       expect(
         await gitlab.initPlatform({
-          endpoint: 'https://gitlab.renovatebot.com',
+          endpoint,
           token: 'some-token',
         })
       ).toMatchSnapshot();
@@ -126,7 +165,6 @@ describe('platform/gitlab', () => {
     repoParams: RepoParams = {
       repository: 'some/repo',
       localDir: '',
-      optimizeForDisabled: false,
     },
     repoResp = null,
     scope = httpMock.scope(gitlabApiHost)
@@ -145,38 +183,15 @@ describe('platform/gitlab', () => {
   }
 
   describe('initRepo', () => {
-    it(`should throw error if disabled in renovate.json`, async () => {
-      httpMock
-        .scope(gitlabApiHost)
-        .get('/api/v4/projects/some%2Frepo')
-        .reply(200, {
-          default_branch: 'master',
-          http_url_to_repo: 'https://gitlab.com/some/repo.git',
-        })
-        .get(
-          '/api/v4/projects/some%2Frepo/repository/files/renovate.json?ref=master'
-        )
-        .reply(200, {
-          content: Buffer.from('{"enabled": false}').toString('base64'),
-        });
-      await expect(
-        gitlab.initRepo({
-          repository: 'some/repo',
-          localDir: '',
-          optimizeForDisabled: true,
-        })
-      ).rejects.toThrow(REPOSITORY_DISABLED);
-      expect(httpMock.getTrace()).toMatchSnapshot();
-    });
+    const okReturn = { default_branch: 'master', url: 'https://some-url' };
     it(`should escape all forward slashes in project names`, async () => {
       httpMock
         .scope(gitlabApiHost)
         .get('/api/v4/projects/some%2Frepo%2Fproject')
-        .reply(200, []);
+        .reply(200, okReturn);
       await gitlab.initRepo({
         repository: 'some/repo/project',
         localDir: '',
-        optimizeForDisabled: false,
       });
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
@@ -189,7 +204,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow('always error');
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -203,7 +217,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_ARCHIVED);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -217,7 +230,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_MIRRORED);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -231,7 +243,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_DISABLED);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -245,7 +256,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_DISABLED);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -259,7 +269,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_EMPTY);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -273,7 +282,6 @@ describe('platform/gitlab', () => {
         gitlab.initRepo({
           repository: 'some/repo',
           localDir: '',
-          optimizeForDisabled: false,
         })
       ).rejects.toThrow(REPOSITORY_EMPTY);
       expect(httpMock.getTrace()).toMatchSnapshot();
@@ -289,7 +297,6 @@ describe('platform/gitlab', () => {
       await gitlab.initRepo({
         repository: 'some/repo/project',
         localDir: '',
-        optimizeForDisabled: false,
       });
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
@@ -300,7 +307,6 @@ describe('platform/gitlab', () => {
         {
           repository: 'some/repo/project',
           localDir: '',
-          optimizeForDisabled: false,
         },
         {
           default_branch: 'master',
@@ -317,7 +323,6 @@ describe('platform/gitlab', () => {
         {
           repository: 'some/repo/project',
           localDir: '',
-          optimizeForDisabled: false,
         },
         {
           default_branch: 'master',
@@ -334,9 +339,7 @@ describe('platform/gitlab', () => {
     it('should return null if no PR exists', async () => {
       const scope = await initRepo();
       scope
-        .get(
-          '/api/v4/projects/some%2Frepo/merge_requests?per_page=100&state=opened&source_branch=some-branch'
-        )
+        .get('/api/v4/projects/some%2Frepo/merge_requests?per_page=100')
         .reply(200, []);
       const pr = await gitlab.getBranchPr('some-branch');
       expect(pr).toBeNull();
@@ -345,12 +348,11 @@ describe('platform/gitlab', () => {
     it('should return the PR object', async () => {
       const scope = await initRepo();
       scope
-        .get(
-          '/api/v4/projects/some%2Frepo/merge_requests?per_page=100&state=opened&source_branch=some-branch'
-        )
+        .get('/api/v4/projects/some%2Frepo/merge_requests?per_page=100')
         .reply(200, [
           {
             iid: 91,
+            title: 'some change',
             source_branch: 'some-branch',
             target_branch: 'master',
             state: 'opened',
@@ -361,6 +363,81 @@ describe('platform/gitlab', () => {
         )
         .reply(200, {
           iid: 91,
+          title: 'some change',
+          state: 'opened',
+          additions: 1,
+          deletions: 1,
+          commits: 1,
+          source_branch: 'some-branch',
+          target_branch: 'master',
+          base: {
+            sha: '1234',
+          },
+        })
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/commits/0d9c7726c3d628b7e28af234595cfd20febdbf8e/statuses'
+        )
+        .reply(200, []);
+      const pr = await gitlab.getBranchPr('some-branch');
+      expect(pr).toMatchSnapshot();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('should strip draft prefix from title', async () => {
+      const scope = await initRepo();
+      scope
+        .get('/api/v4/projects/some%2Frepo/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 91,
+            title: 'Draft: some change',
+            source_branch: 'some-branch',
+            target_branch: 'master',
+            state: 'opened',
+          },
+        ])
+        .get(
+          '/api/v4/projects/some%2Frepo/merge_requests/91?include_diverged_commits_count=1'
+        )
+        .reply(200, {
+          iid: 91,
+          title: 'Draft: some change',
+          state: 'opened',
+          additions: 1,
+          deletions: 1,
+          commits: 1,
+          source_branch: 'some-branch',
+          target_branch: 'master',
+          base: {
+            sha: '1234',
+          },
+        })
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/commits/0d9c7726c3d628b7e28af234595cfd20febdbf8e/statuses'
+        )
+        .reply(200, []);
+      const pr = await gitlab.getBranchPr('some-branch');
+      expect(pr).toMatchSnapshot();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('should strip deprecated draft prefix from title', async () => {
+      const scope = await initRepo();
+      scope
+        .get('/api/v4/projects/some%2Frepo/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 91,
+            title: 'WIP: some change',
+            source_branch: 'some-branch',
+            target_branch: 'master',
+            state: 'opened',
+          },
+        ])
+        .get(
+          '/api/v4/projects/some%2Frepo/merge_requests/91?include_diverged_commits_count=1'
+        )
+        .reply(200, {
+          iid: 91,
+          title: 'WIP: some change',
           state: 'opened',
           additions: 1,
           deletions: 1,
@@ -434,6 +511,39 @@ describe('platform/gitlab', () => {
         .reply(200, [{ status: 'failed', allow_failure: true }]);
       const res = await gitlab.getBranchStatus('somebranch', []);
       expect(res).toEqual(BranchStatus.green);
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('returns success if job is skipped', async () => {
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/commits/0d9c7726c3d628b7e28af234595cfd20febdbf8e/statuses'
+        )
+        .reply(200, [{ status: 'success' }, { status: 'skipped' }]);
+      const res = await gitlab.getBranchStatus('somebranch', []);
+      expect(res).toEqual(BranchStatus.green);
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('returns yellow if there are no jobs expect skipped', async () => {
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/commits/0d9c7726c3d628b7e28af234595cfd20febdbf8e/statuses'
+        )
+        .reply(200, [{ status: 'skipped' }]);
+      const res = await gitlab.getBranchStatus('somebranch', []);
+      expect(res).toEqual(BranchStatus.yellow);
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('returns failure if any mandatory jobs fails and one job is skipped', async () => {
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/commits/0d9c7726c3d628b7e28af234595cfd20febdbf8e/statuses'
+        )
+        .reply(200, [{ status: 'skipped' }, { status: 'failed' }]);
+      const res = await gitlab.getBranchStatus('somebranch', []);
+      expect(res).toEqual(BranchStatus.red);
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
     it('returns failure if any mandatory jobs fails', async () => {
@@ -745,14 +855,115 @@ describe('platform/gitlab', () => {
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
   });
-  describe('addReviewers(issueNo, reviewers)', () => {
-    it('should add the given reviewers to the PR', async () => {
-      // no-op
-      httpMock.scope(gitlabApiHost);
-      await gitlab.addReviewers(42, ['someuser', 'someotheruser']);
-      expect(httpMock.getTrace()).toMatchSnapshot();
+
+  describe('addReviewers(iid, reviewers)', () => {
+    describe('13.8.0', () => {
+      it('should not be supported in too low version', async () => {
+        await initFakePlatform('13.8.0');
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(logger.warn).toHaveBeenCalledWith(
+          { version: '13.8.0' },
+          'Adding reviewers is only available in GitLab 13.9 and onwards'
+        );
+      });
+    });
+
+    describe('13.9.0', () => {
+      beforeEach(async () => {
+        await initFakePlatform('13.9.0');
+      });
+
+      const existingReviewers = [
+        { id: 1, username: 'foo' },
+        { id: 2, username: 'bar' },
+      ];
+
+      it('should fail to get existing reviewers', async () => {
+        const scope = httpMock
+          .scope(gitlabApiHost)
+          .get(
+            '/api/v4/projects/undefined/merge_requests/42?include_diverged_commits_count=1'
+          )
+          .reply(404);
+
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(scope.isDone()).toBeTrue();
+      });
+
+      it('should fail to get user IDs', async () => {
+        const scope = httpMock
+          .scope(gitlabApiHost)
+          .get(
+            '/api/v4/projects/undefined/merge_requests/42?include_diverged_commits_count=1'
+          )
+          .reply(200, { reviewers: existingReviewers })
+          .get('/api/v4/users?username=someuser')
+          .reply(200, [{ id: 10 }])
+          .get('/api/v4/users?username=someotheruser')
+          .reply(404);
+
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(scope.isDone()).toBeTrue();
+      });
+
+      it('should fail to add reviewers to the MR', async () => {
+        const scope = httpMock
+          .scope(gitlabApiHost)
+          .get(
+            '/api/v4/projects/undefined/merge_requests/42?include_diverged_commits_count=1'
+          )
+          .reply(200, { reviewers: existingReviewers })
+          .get('/api/v4/users?username=someuser')
+          .reply(200, [{ id: 10 }])
+          .get('/api/v4/users?username=someotheruser')
+          .reply(200, [{ id: 15 }])
+          .put('/api/v4/projects/undefined/merge_requests/42', {
+            reviewer_ids: [1, 2, 10, 15],
+          })
+          .reply(404);
+
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(scope.isDone()).toBeTrue();
+      });
+
+      it('should add the given reviewers to the MR', async () => {
+        const scope = httpMock
+          .scope(gitlabApiHost)
+          .get(
+            '/api/v4/projects/undefined/merge_requests/42?include_diverged_commits_count=1'
+          )
+          .reply(200, { reviewers: existingReviewers })
+          .get('/api/v4/users?username=someuser')
+          .reply(200, [{ id: 10 }])
+          .get('/api/v4/users?username=someotheruser')
+          .reply(200, [{ id: 15 }])
+          .put('/api/v4/projects/undefined/merge_requests/42', {
+            reviewer_ids: [1, 2, 10, 15],
+          })
+          .reply(200);
+
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(scope.isDone()).toBeTrue();
+      });
+
+      it('should only add reviewers if necessary', async () => {
+        const scope = httpMock
+          .scope(gitlabApiHost)
+          .get(
+            '/api/v4/projects/undefined/merge_requests/42?include_diverged_commits_count=1'
+          )
+          .reply(200, { reviewers: existingReviewers })
+          .get('/api/v4/users?username=someuser')
+          .reply(200, [{ id: 1 }])
+          .get('/api/v4/users?username=someotheruser')
+          .reply(200, [{ id: 2 }]);
+
+        await gitlab.addReviewers(42, ['someuser', 'foo', 'someotheruser']);
+        expect(scope.isDone()).toBeTrue();
+      });
     });
   });
+
   describe('ensureComment', () => {
     it('add comment if not found', async () => {
       const scope = await initRepo();
@@ -833,9 +1044,7 @@ describe('platform/gitlab', () => {
     it('returns true if no title and all state', async () => {
       httpMock
         .scope(gitlabApiHost)
-        .get(
-          '/api/v4/projects/undefined/merge_requests?per_page=100&author_id=undefined'
-        )
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
         .reply(200, [
           {
             iid: 1,
@@ -853,9 +1062,7 @@ describe('platform/gitlab', () => {
     it('returns true if not open', async () => {
       httpMock
         .scope(gitlabApiHost)
-        .get(
-          '/api/v4/projects/undefined/merge_requests?per_page=100&author_id=undefined'
-        )
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
         .reply(200, [
           {
             iid: 1,
@@ -875,9 +1082,7 @@ describe('platform/gitlab', () => {
     it('returns true if open and with title', async () => {
       httpMock
         .scope(gitlabApiHost)
-        .get(
-          '/api/v4/projects/undefined/merge_requests?per_page=100&author_id=undefined'
-        )
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
         .reply(200, [
           {
             iid: 1,
@@ -898,9 +1103,7 @@ describe('platform/gitlab', () => {
     it('returns true with title', async () => {
       httpMock
         .scope(gitlabApiHost)
-        .get(
-          '/api/v4/projects/undefined/merge_requests?per_page=100&author_id=undefined'
-        )
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
         .reply(200, [
           {
             iid: 1,
@@ -916,18 +1119,77 @@ describe('platform/gitlab', () => {
       expect(res).toBeDefined();
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
+    it('returns true with draft prefix title', async () => {
+      httpMock
+        .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'Draft: branch a pr',
+            state: 'opened',
+          },
+        ]);
+      const res = await gitlab.findPr({
+        branchName: 'branch-a',
+        prTitle: 'branch a pr',
+      });
+      expect(res).toBeDefined();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('returns true with deprecated draft prefix title', async () => {
+      httpMock
+        .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'WIP: branch a pr',
+            state: 'opened',
+          },
+        ]);
+      const res = await gitlab.findPr({
+        branchName: 'branch-a',
+        prTitle: 'branch a pr',
+      });
+      expect(res).toBeDefined();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
   });
+
+  async function initPlatform(gitlabVersion: string) {
+    httpMock
+      .scope(gitlabApiHost)
+      .get('/api/v4/user')
+      .reply(200, {
+        email: 'a@b.com',
+        name: 'Renovate Bot',
+      })
+      .get('/api/v4/version')
+      .reply(200, {
+        version: gitlabVersion,
+      });
+    await gitlab.initPlatform({
+      token: 'some-token',
+      endpoint: undefined,
+    });
+  }
+
   describe('createPr(branchName, title, body)', () => {
     it('returns the PR', async () => {
+      await initPlatform('13.3.6-ee');
       httpMock
         .scope(gitlabApiHost)
         .post('/api/v4/projects/undefined/merge_requests')
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'some title',
         });
       const pr = await gitlab.createPr({
-        branchName: 'some-branch',
+        sourceBranch: 'some-branch',
         targetBranch: 'master',
         prTitle: 'some-title',
         prBody: 'the-body',
@@ -937,15 +1199,17 @@ describe('platform/gitlab', () => {
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
     it('uses default branch', async () => {
+      await initPlatform('13.3.6-ee');
       httpMock
         .scope(gitlabApiHost)
         .post('/api/v4/projects/undefined/merge_requests')
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'some title',
         });
       const pr = await gitlab.createPr({
-        branchName: 'some-branch',
+        sourceBranch: 'some-branch',
         targetBranch: 'master',
         prTitle: 'some-title',
         prBody: 'the-body',
@@ -954,13 +1218,55 @@ describe('platform/gitlab', () => {
       expect(pr).toMatchSnapshot();
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
-    it('auto-accepts the MR when requested', async () => {
+    it('supports draftPR on < 13.2', async () => {
+      await initPlatform('13.1.0-ee');
       httpMock
         .scope(gitlabApiHost)
         .post('/api/v4/projects/undefined/merge_requests')
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'WIP: some title',
+        });
+      const pr = await gitlab.createPr({
+        sourceBranch: 'some-branch',
+        targetBranch: 'master',
+        prTitle: 'some-title',
+        prBody: 'the-body',
+        draftPR: true,
+      });
+      expect(pr).toMatchSnapshot();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('supports draftPR on >= 13.2', async () => {
+      await initPlatform('13.2.0-ee');
+      httpMock
+        .scope(gitlabApiHost)
+        .post('/api/v4/projects/undefined/merge_requests')
+        .reply(200, {
+          id: 1,
+          iid: 12345,
+          title: 'Draft: some title',
+        });
+      const pr = await gitlab.createPr({
+        sourceBranch: 'some-branch',
+        targetBranch: 'master',
+        prTitle: 'some-title',
+        prBody: 'the-body',
+        draftPR: true,
+      });
+      expect(pr).toMatchSnapshot();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('auto-accepts the MR when requested', async () => {
+      await initPlatform('13.3.6-ee');
+      httpMock
+        .scope(gitlabApiHost)
+        .post('/api/v4/projects/undefined/merge_requests')
+        .reply(200, {
+          id: 1,
+          iid: 12345,
+          title: 'some title',
         })
         .get('/api/v4/projects/undefined/merge_requests/12345')
         .reply(200)
@@ -977,7 +1283,7 @@ describe('platform/gitlab', () => {
         .put('/api/v4/projects/undefined/merge_requests/12345/merge')
         .reply(200);
       await gitlab.createPr({
-        branchName: 'some-branch',
+        sourceBranch: 'some-branch',
         targetBranch: 'master',
         prTitle: 'some-title',
         prBody: 'the-body',
@@ -1000,6 +1306,7 @@ describe('platform/gitlab', () => {
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'do something',
           description: 'a merge request',
           state: PrState.Merged,
           merge_status: 'cannot_be_merged',
@@ -1013,6 +1320,52 @@ describe('platform/gitlab', () => {
       expect(pr.hasAssignees).toBe(false);
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
+    it('removes draft prefix from returned title', async () => {
+      httpMock
+        .scope(gitlabApiHost)
+        .get(
+          '/api/v4/projects/undefined/merge_requests/12345?include_diverged_commits_count=1'
+        )
+        .reply(200, {
+          id: 1,
+          iid: 12345,
+          title: 'Draft: do something',
+          description: 'a merge request',
+          state: PrState.Merged,
+          merge_status: 'cannot_be_merged',
+          diverged_commits_count: 5,
+          source_branch: 'some-branch',
+          target_branch: 'master',
+          assignees: [],
+        });
+      const pr = await gitlab.getPr(12345);
+      expect(pr).toMatchSnapshot();
+      expect(pr.title).toBe('do something');
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('removes deprecated draft prefix from returned title', async () => {
+      httpMock
+        .scope(gitlabApiHost)
+        .get(
+          '/api/v4/projects/undefined/merge_requests/12345?include_diverged_commits_count=1'
+        )
+        .reply(200, {
+          id: 1,
+          iid: 12345,
+          title: 'WIP: do something',
+          description: 'a merge request',
+          state: PrState.Merged,
+          merge_status: 'cannot_be_merged',
+          diverged_commits_count: 5,
+          source_branch: 'some-branch',
+          target_branch: 'master',
+          assignees: [],
+        });
+      const pr = await gitlab.getPr(12345);
+      expect(pr).toMatchSnapshot();
+      expect(pr.title).toBe('do something');
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
     it('returns the mergeable PR', async () => {
       const scope = await initRepo();
       scope
@@ -1022,6 +1375,7 @@ describe('platform/gitlab', () => {
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'do something',
           description: 'a merge request',
           state: PrState.Open,
           diverged_commits_count: 5,
@@ -1049,6 +1403,7 @@ describe('platform/gitlab', () => {
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'do something',
           description: 'a merge request',
           state: PrState.Open,
           merge_status: 'cannot_be_merged',
@@ -1070,16 +1425,72 @@ describe('platform/gitlab', () => {
   describe('updatePr(prNo, title, body)', () => {
     jest.resetAllMocks();
     it('updates the PR', async () => {
+      await initPlatform('13.3.6-ee');
       httpMock
         .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'branch a pr',
+            state: PrState.Open,
+          },
+        ])
+        .put('/api/v4/projects/undefined/merge_requests/1')
+        .reply(200);
+      await gitlab.updatePr({ number: 1, prTitle: 'title', prBody: 'body' });
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('retains draft status when draft uses current prefix', async () => {
+      await initPlatform('13.3.6-ee');
+      httpMock
+        .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'Draft: foo',
+            state: PrState.Open,
+          },
+        ])
+        .put('/api/v4/projects/undefined/merge_requests/1')
+        .reply(200);
+      await gitlab.updatePr({ number: 1, prTitle: 'title', prBody: 'body' });
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('retains draft status when draft uses deprecated prefix', async () => {
+      await initPlatform('13.3.6-ee');
+      httpMock
+        .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'WIP: foo',
+            state: PrState.Open,
+          },
+        ])
         .put('/api/v4/projects/undefined/merge_requests/1')
         .reply(200);
       await gitlab.updatePr({ number: 1, prTitle: 'title', prBody: 'body' });
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
     it('closes the PR', async () => {
+      await initPlatform('13.3.6-ee');
       httpMock
         .scope(gitlabApiHost)
+        .get('/api/v4/projects/undefined/merge_requests?per_page=100')
+        .reply(200, [
+          {
+            iid: 1,
+            source_branch: 'branch-a',
+            title: 'branch a pr',
+            state: PrState.Open,
+          },
+        ])
         .put('/api/v4/projects/undefined/merge_requests/1')
         .reply(200);
       await gitlab.updatePr({
@@ -1102,6 +1513,7 @@ describe('platform/gitlab', () => {
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
   });
+
   const prBody = `https://github.com/foo/bar/issues/5 plus also [a link](https://github.com/foo/bar/issues/5
 
   Pull Requests are the best, here are some PRs.
@@ -1112,11 +1524,28 @@ These updates have all been created already. Click a checkbox below to force a r
 
  - [ ] <!-- rebase-branch=renovate/major-got-packages -->[build(deps): update got packages (major)](../pull/2433) (\`gh-got\`, \`gl-got\`, \`got\`)
 `;
-  describe('getPrBody(input)', () => {
-    it('returns updated pr body', () => {
-      expect(gitlab.getPrBody(prBody)).toMatchSnapshot();
+
+  describe('massageMarkdown(input)', () => {
+    it('returns updated pr body', async () => {
+      jest.mock('../utils/pr-body');
+      const { smartTruncate } = require('../utils/pr-body');
+
+      await initFakePlatform('13.4.0');
+      expect(gitlab.massageMarkdown(prBody)).toMatchSnapshot();
+      expect(smartTruncate).not.toHaveBeenCalled();
+    });
+
+    it('truncates description if too low API version', async () => {
+      jest.mock('../utils/pr-body');
+      const { smartTruncate } = require('../utils/pr-body');
+
+      await initFakePlatform('13.3.0');
+      gitlab.massageMarkdown(prBody);
+      expect(smartTruncate).toHaveBeenCalledTimes(1);
+      expect(smartTruncate).toHaveBeenCalledWith(expect.any(String), 25000);
     });
   });
+
   describe('getVulnerabilityAlerts()', () => {
     it('returns empty', async () => {
       const res = await gitlab.getVulnerabilityAlerts();
@@ -1133,6 +1562,7 @@ These updates have all been created already. Click a checkbox below to force a r
         .reply(200, {
           id: 1,
           iid: 12345,
+          title: 'some change',
           description: 'a merge request',
           state: PrState.Merged,
           merge_status: 'cannot_be_merged',
@@ -1143,6 +1573,44 @@ These updates have all been created already. Click a checkbox below to force a r
         .put('/api/v4/projects/undefined/merge_requests/42')
         .reply(200);
       await gitlab.deleteLabel(42, 'rebase');
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+  });
+  describe('getJsonFile()', () => {
+    it('returns file content', async () => {
+      const data = { foo: 'bar' };
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/files/dir%2Ffile.json?ref=HEAD'
+        )
+        .reply(200, {
+          content: Buffer.from(JSON.stringify(data)).toString('base64'),
+        });
+      const res = await gitlab.getJsonFile('dir/file.json');
+      expect(res).toEqual(data);
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('throws on malformed JSON', async () => {
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/files/dir%2Ffile.json?ref=HEAD'
+        )
+        .reply(200, {
+          content: Buffer.from('!@#').toString('base64'),
+        });
+      await expect(gitlab.getJsonFile('dir/file.json')).rejects.toThrow();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
+    it('throws on errors', async () => {
+      const scope = await initRepo();
+      scope
+        .get(
+          '/api/v4/projects/some%2Frepo/repository/files/dir%2Ffile.json?ref=HEAD'
+        )
+        .replyWithError('some error');
+      await expect(gitlab.getJsonFile('dir/file.json')).rejects.toThrow();
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
   });

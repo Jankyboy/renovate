@@ -1,7 +1,7 @@
 import { exec as _exec } from 'child_process';
 import _fs from 'fs-extra';
 import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../test/execUtil';
+import { envMock, mockExecAll } from '../../../test/exec-util';
 import { git, mocked } from '../../../test/util';
 import { setUtilConfig } from '../../util';
 import { BinarySource } from '../../util/exec/common';
@@ -39,13 +39,14 @@ const config = {
   // `join` fixes Windows CI
   localDir: join('/tmp/github/some/repo'),
   cacheDir: join('/tmp/renovate/cache'),
-  dockerUser: 'foobar',
-  compatibility: { go: '1.14' },
+  constraints: { go: '1.14' },
 };
 
 const goEnv = {
   GONOSUMDB: '1',
   GOPROXY: 'proxy.example.com',
+  GOPRIVATE: 'private.example.com/*',
+  GONOPROXY: 'noproxy.example.com/*',
   CGO_ENABLED: '1',
 };
 
@@ -253,6 +254,140 @@ describe('.updateArtifacts()', () => {
         updatedDeps: [],
         newPackageFileContent: gomod1,
         config,
+      })
+    ).toMatchSnapshot();
+    expect(execSnapshots).toMatchSnapshot();
+  });
+  it('updates import paths with gomodUpdateImportPaths', async () => {
+    fs.readFile.mockResolvedValueOnce('Current go.sum' as any);
+    fs.readFile.mockResolvedValueOnce(null as any); // vendor modules filename
+    const execSnapshots = mockExecAll(exec);
+    git.getRepoStatus.mockResolvedValueOnce({
+      modified: ['go.sum', 'main.go'],
+    } as StatusResult);
+    fs.readFile
+      .mockResolvedValueOnce('New go.sum' as any)
+      .mockResolvedValueOnce('New main.go' as any)
+      .mockResolvedValueOnce('New go.mod' as any);
+    expect(
+      await gomod.updateArtifacts({
+        packageFileName: 'go.mod',
+        updatedDeps: ['github.com/google/go-github/v24'],
+        newPackageFileContent: gomod1,
+        config: {
+          ...config,
+          updateType: 'major',
+          newMajor: 28,
+          postUpdateOptions: ['gomodUpdateImportPaths'],
+        },
+      })
+    ).toMatchSnapshot();
+    expect(execSnapshots).toMatchSnapshot();
+  });
+  it('skips updating import paths with gomodUpdateImportPaths on v0 to v1', async () => {
+    fs.readFile.mockResolvedValueOnce('Current go.sum' as any);
+    fs.readFile.mockResolvedValueOnce(null as any); // vendor modules filename
+    const execSnapshots = mockExecAll(exec);
+    git.getRepoStatus.mockResolvedValueOnce({
+      modified: ['go.sum', 'main.go'],
+    } as StatusResult);
+    fs.readFile
+      .mockResolvedValueOnce('New go.sum' as any)
+      .mockResolvedValueOnce('New go.mod' as any);
+    expect(
+      await gomod.updateArtifacts({
+        packageFileName: 'go.mod',
+        updatedDeps: ['github.com/pkg/errors'],
+        newPackageFileContent: gomod1,
+        config: {
+          ...config,
+          updateType: 'major',
+          newMajor: 1,
+          postUpdateOptions: ['gomodUpdateImportPaths'],
+        },
+      })
+    ).toMatchSnapshot();
+    expect(execSnapshots).toMatchSnapshot();
+  });
+  it('updates import paths with specific tool version from constraint', async () => {
+    fs.readFile.mockResolvedValueOnce('Current go.sum' as any);
+    fs.readFile.mockResolvedValueOnce(null as any); // vendor modules filename
+    const execSnapshots = mockExecAll(exec);
+    git.getRepoStatus.mockResolvedValueOnce({
+      modified: ['go.sum', 'main.go'],
+    } as StatusResult);
+    fs.readFile
+      .mockResolvedValueOnce('New go.sum' as any)
+      .mockResolvedValueOnce('New main.go' as any)
+      .mockResolvedValueOnce('New go.mod' as any);
+    expect(
+      await gomod.updateArtifacts({
+        packageFileName: 'go.mod',
+        updatedDeps: ['github.com/google/go-github/v24'],
+        newPackageFileContent: gomod1,
+        config: {
+          ...config,
+          updateType: 'major',
+          newMajor: 28,
+          postUpdateOptions: ['gomodUpdateImportPaths'],
+          constraints: {
+            gomodMod: 'v1.2.3',
+          },
+        },
+      })
+    ).toMatchSnapshot();
+    expect(execSnapshots).toMatchSnapshot();
+  });
+  it('updates import paths with latest tool version on invalid version constraint', async () => {
+    fs.readFile.mockResolvedValueOnce('Current go.sum' as any);
+    fs.readFile.mockResolvedValueOnce(null as any); // vendor modules filename
+    const execSnapshots = mockExecAll(exec);
+    git.getRepoStatus.mockResolvedValueOnce({
+      modified: ['go.sum', 'main.go'],
+    } as StatusResult);
+    fs.readFile
+      .mockResolvedValueOnce('New go.sum' as any)
+      .mockResolvedValueOnce('New main.go' as any)
+      .mockResolvedValueOnce('New go.mod' as any);
+    expect(
+      await gomod.updateArtifacts({
+        packageFileName: 'go.mod',
+        updatedDeps: ['github.com/google/go-github/v24'],
+        newPackageFileContent: gomod1,
+        config: {
+          ...config,
+          updateType: 'major',
+          newMajor: 28,
+          postUpdateOptions: ['gomodUpdateImportPaths'],
+          constraints: {
+            gomodMod: 'a.b.c',
+          },
+        },
+      })
+    ).toMatchSnapshot();
+    expect(execSnapshots).toMatchSnapshot();
+  });
+  it('skips updating import paths for gopkg.in dependencies', async () => {
+    fs.readFile.mockResolvedValueOnce('Current go.sum' as any);
+    fs.readFile.mockResolvedValueOnce(null as any); // vendor modules filename
+    const execSnapshots = mockExecAll(exec);
+    git.getRepoStatus.mockResolvedValueOnce({
+      modified: ['go.sum'],
+    } as StatusResult);
+    fs.readFile
+      .mockResolvedValueOnce('New go.sum' as any)
+      .mockResolvedValueOnce('New go.mod' as any);
+    expect(
+      await gomod.updateArtifacts({
+        packageFileName: 'go.mod',
+        updatedDeps: ['gopkg.in/yaml.v2'],
+        newPackageFileContent: gomod1,
+        config: {
+          ...config,
+          updateType: 'major',
+          newMajor: 28,
+          postUpdateOptions: ['gomodUpdateImportPaths'],
+        },
       })
     ).toMatchSnapshot();
     expect(execSnapshots).toMatchSnapshot();

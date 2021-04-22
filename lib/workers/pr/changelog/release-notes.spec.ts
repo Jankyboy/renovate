@@ -1,16 +1,23 @@
 import fs from 'fs-extra';
-import * as httpMock from '../../../../test/httpMock';
-import { getName } from '../../../../test/util';
-import { ChangeLogNotes } from './common';
+import { DateTime } from 'luxon';
+import * as httpMock from '../../../../test/http-mock';
+import { getName, mocked } from '../../../../test/util';
+import * as _hostRules from '../../../util/host-rules';
 import {
   addReleaseNotes,
   getReleaseList,
   getReleaseNotes,
   getReleaseNotesMd,
+  releaseNotesCacheMinutes,
 } from './release-notes';
+import type { ChangeLogNotes } from './types';
+
+jest.mock('../../../util/host-rules');
+
+const hostRules = mocked(_hostRules);
 
 const angularJsChangelogMd = fs.readFileSync(
-  'lib/workers/pr/__fixtures__/angular.js.md',
+  'lib/workers/pr/__fixtures__/angular-js.md',
   'utf8'
 );
 const jestChangelogMd = fs.readFileSync(
@@ -55,10 +62,31 @@ const gitlabTreeResponse = [
 describe(getName(__filename), () => {
   beforeEach(() => {
     httpMock.setup();
+    hostRules.find.mockReturnValue({});
+    hostRules.hosts.mockReturnValue([]);
   });
 
   afterEach(() => {
     httpMock.reset();
+    jest.resetAllMocks();
+  });
+
+  describe('releaseNotesCacheMinutes', () => {
+    const now = DateTime.local();
+    it.each([
+      [now, 55],
+      [now.minus({ week: 2 }), 1435],
+      [now.minus({ year: 1 }), 14495],
+    ])('works with string date (%s, %i)', (date, minutes) => {
+      expect(releaseNotesCacheMinutes(date?.toISO())).toEqual(minutes);
+    });
+
+    it('handles date object', () => {
+      expect(releaseNotesCacheMinutes(new Date())).toEqual(55);
+    });
+    it.each([null, undefined, 'fake', 123])('handles invalid: %s', (date) => {
+      expect(releaseNotesCacheMinutes(date as never)).toEqual(55);
+    });
   });
 
   describe('addReleaseNotes()', () => {
@@ -129,6 +157,28 @@ describe(getName(__filename), () => {
       expect(res).toMatchSnapshot();
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
+    it('should return release list for self hosted gitlab project', async () => {
+      hostRules.find.mockReturnValue({ token: 'some-token' });
+      httpMock
+        .scope('https://my.custom.domain/')
+        .get(
+          '/api/v4/projects/some%2fyet-other-repository/releases?per_page=100'
+        )
+        .reply(200, [
+          { tag_name: `v1.0.0` },
+          {
+            tag_name: `v1.0.1`,
+            body:
+              'some body #123, [#124](https://my.custom.domain/some/yet-other-repository/issues/124)',
+          },
+        ]);
+      const res = await getReleaseList(
+        'https://my.custom.domain/api/v4/',
+        'some/yet-other-repository'
+      );
+      expect(res).toMatchSnapshot();
+      expect(httpMock.getTrace()).toMatchSnapshot();
+    });
   });
   describe('getReleaseNotes()', () => {
     it('should return null for release notes without body', async () => {
@@ -146,7 +196,7 @@ describe(getName(__filename), () => {
       expect(res).toBeNull();
       expect(httpMock.getTrace()).toMatchSnapshot();
     });
-    it.each([[''], ['v'], ['other-']])(
+    it.each([[''], ['v'], ['other-'], ['other_v'], ['other@']])(
       'gets release notes with body',
       async (prefix) => {
         httpMock
@@ -318,6 +368,27 @@ describe(getName(__filename), () => {
         '20.26.0',
         'https://gitlab.com/',
         'https://api.gitlab.com/'
+      );
+      expect(httpMock.getTrace()).toMatchSnapshot();
+      expect(res).not.toBeNull();
+      expect(res).toMatchSnapshot();
+    });
+    it('parses self hosted gitlab', async () => {
+      hostRules.find.mockReturnValue({ token: 'some-token' });
+      jest.setTimeout(0);
+      httpMock
+        .scope('https://my.custom.domain/')
+        .get(
+          '/projects/gitlab-org%2fgitter%2fwebapp/repository/tree?per_page=100'
+        )
+        .reply(200, gitlabTreeResponse)
+        .get('/projects/gitlab-org%2fgitter%2fwebapp/repository/blobs/abcd/raw')
+        .reply(200, gitterWebappChangelogMd);
+      const res = await getReleaseNotesMd(
+        'gitlab-org/gitter/webapp',
+        '20.26.0',
+        'https://my.custom.domain/',
+        'https://my.custom.domain/'
       );
       expect(httpMock.getTrace()).toMatchSnapshot();
       expect(res).not.toBeNull();

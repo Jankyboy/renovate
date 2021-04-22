@@ -1,4 +1,4 @@
-import { Pr } from '../common';
+import { Pr } from '../types';
 
 // https://developer.github.com/v3/repos/statuses
 // https://developer.github.com/v3/checks/runs/
@@ -26,8 +26,19 @@ export interface GhPr extends Pr {
 }
 
 export interface GhRestPr extends GhPr {
-  head: { ref: string; sha: string };
+  head: {
+    ref: string;
+    sha: string;
+    repo: { full_name: string };
+  };
   mergeable_state: string;
+  number: number;
+  title: string;
+  state: string;
+  merged_at: string;
+  created_at: string;
+  closed_at: string;
+  user?: { login?: string };
 }
 
 export interface GhGraphQlPr extends GhPr {
@@ -62,6 +73,8 @@ export interface LocalRepoConfig {
   isGhe: boolean;
   renovateUsername: string;
   productLinks: any;
+  ignorePrAuthor: boolean;
+  branchPrs: Pr[];
 }
 
 export type BranchProtection = any;

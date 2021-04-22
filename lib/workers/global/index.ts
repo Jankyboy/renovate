@@ -1,17 +1,25 @@
-import path from 'path';
 import is from '@sindresorhus/is';
+import { ERROR } from 'bunyan';
 import fs from 'fs-extra';
+import { satisfies } from 'semver';
+import upath from 'upath';
+import * as pkg from '../../../package.json';
 import * as configParser from '../../config';
-import { getErrors, logger, setMeta } from '../../logger';
+import { resolveConfigPresets } from '../../config/presets';
+import { validateConfigSecrets } from '../../config/secrets';
+import type {
+  GlobalConfig,
+  RenovateConfig,
+  RenovateRepository,
+} from '../../config/types';
+import { CONFIG_PRESETS_INVALID } from '../../constants/error-messages';
+import { getProblems, logger, setMeta } from '../../logger';
 import { setUtilConfig } from '../../util';
 import * as hostRules from '../../util/host-rules';
 import * as repositoryWorker from '../repository';
 import { autodiscoverRepositories } from './autodiscover';
 import { globalFinalize, globalInitialize } from './initialize';
 import { Limit, isLimitReached } from './limits';
-
-type RenovateConfig = configParser.RenovateConfig;
-type RenovateRepository = configParser.RenovateRepository;
 
 export async function getRepositoryConfig(
   globalConfig: RenovateConfig,
@@ -21,7 +29,7 @@ export async function getRepositoryConfig(
     globalConfig,
     is.string(repository) ? { repository } : repository
   );
-  repoConfig.localDir = path.join(
+  repoConfig.localDir = upath.join(
     repoConfig.baseDir,
     `./repos/${repoConfig.platform}/${repoConfig.repository}`
   );
@@ -42,13 +50,51 @@ function haveReachedLimits(): boolean {
   return false;
 }
 
-export async function start(): Promise<0 | 1> {
-  let config: RenovateConfig;
+/* istanbul ignore next */
+function checkEnv(): void {
+  const range = pkg.engines.node;
+  const rangeNext = pkg['engines-next']?.node;
+  if (process.release?.name !== 'node' || !process.versions?.node) {
+    logger.warn(
+      { release: process.release, versions: process.versions },
+      'Unknown node environment detected.'
+    );
+  } else if (!satisfies(process.versions?.node, range)) {
+    logger.error(
+      { versions: process.versions, range },
+      'Unsupported node environment detected. Please update your node version.'
+    );
+  } else if (rangeNext && !satisfies(process.versions?.node, rangeNext)) {
+    logger.warn(
+      { versions: process.versions },
+      `Please upgrade the version of Node.js used to run Renovate to satisfy "${rangeNext}". Support for your current version will be removed in Renovate's next major release.`
+    );
+  }
+}
+
+export async function validatePresets(config: GlobalConfig): Promise<void> {
+  try {
+    await resolveConfigPresets(config);
+  } catch (err) /* istanbul ignore next */ {
+    throw new Error(CONFIG_PRESETS_INVALID);
+  }
+}
+
+export async function start(): Promise<number> {
+  let config: GlobalConfig;
   try {
     // read global config from file, env and cli args
     config = await getGlobalConfig();
     // initialize all submodules
     config = await globalInitialize(config);
+
+    await validatePresets(config);
+
+    checkEnv();
+
+    // validate secrets. Will throw and abort if invalid
+    validateConfigSecrets(config);
+
     // autodiscover repositories (needs to come after platform initialization)
     config = await autodiscoverRepositories(config);
     // Iterate through repositories sequentially
@@ -72,12 +118,16 @@ export async function start(): Promise<0 | 1> {
     } else {
       logger.fatal({ err }, `Fatal error: ${String(err.message)}`);
     }
+    if (!config) {
+      // return early if we can't parse config options
+      logger.debug(`Missing config`);
+      return 2;
+    }
   } finally {
     globalFinalize(config);
     logger.debug(`Renovate exiting`);
   }
-  const loggerErrors = getErrors();
-  /* istanbul ignore if */
+  const loggerErrors = getProblems().filter((p) => p.level >= ERROR);
   if (loggerErrors.length) {
     logger.info(
       { loggerErrors },

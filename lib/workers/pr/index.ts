@@ -1,4 +1,5 @@
-import { RenovateConfig } from '../../config/common';
+import { getAdminConfig } from '../../config/admin';
+import type { RenovateConfig } from '../../config/types';
 import {
   PLATFORM_INTEGRATION_UNAUTHORIZED,
   PLATFORM_RATE_LIMIT_EXCEEDED,
@@ -9,14 +10,12 @@ import { PlatformPrOptions, Pr, platform } from '../../platform';
 import { BranchStatus } from '../../types';
 import { ExternalHostError } from '../../types/errors/external-host-error';
 import { sampleSize } from '../../util';
-import {
-  deleteBranch,
-  getBranchLastCommitTime,
-  isBranchModified,
-} from '../../util/git';
-import { BranchConfig, PrResult } from '../common';
+import { deleteBranch, getBranchLastCommitTime } from '../../util/git';
+import * as template from '../../util/template';
+import { Limit, incLimitedValue, isLimitReached } from '../global/limits';
+import { BranchConfig, PrResult } from '../types';
 import { getPrBody } from './body';
-import { ChangeLogError } from './changelog';
+import { ChangeLogError } from './changelog/types';
 import { codeOwnersForPr } from './code-owners';
 
 function noWhitespaceOrHeadings(input: string): string {
@@ -48,12 +47,14 @@ export async function addAssigneesReviewers(
       if (config.assigneesSampleSize !== null) {
         assignees = sampleSize(assignees, config.assigneesSampleSize);
       }
-      // istanbul ignore if
-      if (config.dryRun) {
-        logger.info(`DRY-RUN: Would add assignees to PR #${pr.number}`);
-      } else {
-        await platform.addAssignees(pr.number, assignees);
-        logger.debug({ assignees }, 'Added assignees');
+      if (assignees.length > 0) {
+        // istanbul ignore if
+        if (getAdminConfig().dryRun) {
+          logger.info(`DRY-RUN: Would add assignees to PR #${pr.number}`);
+        } else {
+          await platform.addAssignees(pr.number, assignees);
+          logger.debug({ assignees }, 'Added assignees');
+        }
       }
     } catch (err) {
       logger.debug(
@@ -66,24 +67,23 @@ export async function addAssigneesReviewers(
   if (config.reviewersFromCodeOwners) {
     reviewers = await addCodeOwners(reviewers, pr);
   }
+  if (config.additionalReviewers.length > 0) {
+    reviewers = reviewers.concat(config.additionalReviewers);
+  }
   if (reviewers.length > 0) {
     try {
-      reviewers = reviewers.map(noLeadingAtSymbol);
-      if (config.additionalReviewers.length > 0) {
-        const additionalReviewers = config.additionalReviewers.map(
-          noLeadingAtSymbol
-        );
-        reviewers = [...new Set(reviewers.concat(additionalReviewers))];
-      }
+      reviewers = [...new Set(reviewers.map(noLeadingAtSymbol))];
       if (config.reviewersSampleSize !== null) {
         reviewers = sampleSize(reviewers, config.reviewersSampleSize);
       }
-      // istanbul ignore if
-      if (config.dryRun) {
-        logger.info(`DRY-RUN: Would add reviewers to PR #${pr.number}`);
-      } else {
-        await platform.addReviewers(pr.number, reviewers);
-        logger.debug({ reviewers }, 'Added reviewers');
+      if (reviewers.length > 0) {
+        // istanbul ignore if
+        if (getAdminConfig().dryRun) {
+          logger.info(`DRY-RUN: Would add reviewers to PR #${pr.number}`);
+        } else {
+          await platform.addReviewers(pr.number, reviewers);
+          logger.debug({ reviewers }, 'Added reviewers');
+        }
       }
     } catch (err) {
       logger.debug(
@@ -94,14 +94,28 @@ export async function addAssigneesReviewers(
   }
 }
 
-// Ensures that PR exists with matching title/body
-export async function ensurePr(
-  prConfig: BranchConfig,
-  prLimitReached?: boolean
-): Promise<{
+export function getPlatformPrOptions(
+  config: RenovateConfig & PlatformPrOptions
+): PlatformPrOptions {
+  return {
+    azureAutoComplete: config.azureAutoComplete,
+    azureWorkItemId: config.azureWorkItemId,
+    bbUseDefaultReviewers: config.bbUseDefaultReviewers,
+    gitLabAutomerge:
+      config.automerge &&
+      config.automergeType === 'pr' &&
+      config.gitLabAutomerge,
+  };
+}
+export type EnsurePrResult = {
   prResult: PrResult;
   pr?: Pr;
-}> {
+};
+
+// Ensures that PR exists with matching title/body
+export async function ensurePr(
+  prConfig: BranchConfig
+): Promise<EnsurePrResult> {
   const config: BranchConfig = { ...prConfig };
 
   logger.trace({ config }, 'ensurePr');
@@ -143,7 +157,10 @@ export async function ensurePr(
     logger.debug(
       `Branch is configured for branch automerge, branch status) is: ${await getBranchStatus()}`
     );
-    if ((await getBranchStatus()) === BranchStatus.yellow) {
+    if (
+      config.stabilityStatus !== BranchStatus.yellow &&
+      (await getBranchStatus()) === BranchStatus.yellow
+    ) {
       logger.debug('Checking how long this branch has been pending');
       const lastCommitTime = await getBranchLastCommitTime(branchName);
       const currentTime = new Date();
@@ -196,7 +213,9 @@ export async function ensurePr(
       );
       if (
         !dependencyDashboardCheck &&
-        elapsedHours < config.prNotPendingHours
+        ((config.stabilityStatus &&
+          config.stabilityStatus !== BranchStatus.yellow) ||
+          elapsedHours < config.prNotPendingHours)
       ) {
         logger.debug(
           `Branch is ${elapsedHours} hours old - skipping PR creation`
@@ -218,7 +237,7 @@ export async function ensurePr(
   for (const upgrade of upgrades) {
     const upgradeKey = `${upgrade.depType}-${upgrade.depName}-${
       upgrade.manager
-    }-${upgrade.fromVersion || upgrade.currentValue}-${upgrade.toVersion}`;
+    }-${upgrade.currentVersion || upgrade.currentValue}-${upgrade.newVersion}`;
     if (processedUpgrades.includes(upgradeKey)) {
       continue; // eslint-disable-line no-continue
     }
@@ -263,8 +282,6 @@ export async function ensurePr(
     config.upgrades.push(upgrade);
   }
 
-  // Update the config object
-  Object.assign(config, upgrades[0]);
   config.hasReleaseNotes = config.upgrades.some((upg) => upg.hasReleaseNotes);
 
   const releaseNoteRepos: string[] = [];
@@ -334,10 +351,15 @@ export async function ensurePr(
         );
       }
       // istanbul ignore if
-      if (config.dryRun) {
+      if (getAdminConfig().dryRun) {
         logger.info(`DRY-RUN: Would update PR #${existingPr.number}`);
       } else {
-        await platform.updatePr({ number: existingPr.number, prTitle, prBody });
+        await platform.updatePr({
+          number: existingPr.number,
+          prTitle,
+          prBody,
+          platformOptions: getPlatformPrOptions(config),
+        });
         logger.info({ pr: existingPr.number, prTitle }, `PR updated`);
       }
       return { prResult: PrResult.Updated, pr: existingPr };
@@ -350,31 +372,30 @@ export async function ensurePr(
     let pr: Pr;
     try {
       // istanbul ignore if
-      if (config.dryRun) {
+      if (getAdminConfig().dryRun) {
         logger.info('DRY-RUN: Would create PR: ' + prTitle);
         pr = { number: 0, displayNumber: 'Dry run PR' } as never;
       } else {
-        const platformOptions: PlatformPrOptions = {
-          azureAutoComplete: config.azureAutoComplete,
-          azureWorkItemId: config.azureWorkItemId,
-          bbUseDefaultReviewers: config.bbUseDefaultReviewers,
-          gitLabAutomerge:
-            config.automerge &&
-            config.automergeType === 'pr' &&
-            config.gitLabAutomerge,
-        };
-        if (!dependencyDashboardCheck && prLimitReached) {
+        if (
+          !dependencyDashboardCheck &&
+          isLimitReached(Limit.PullRequests) &&
+          !config.isVulnerabilityAlert
+        ) {
+          logger.debug('Skipping PR - limit reached');
           return { prResult: PrResult.LimitReached };
         }
         pr = await platform.createPr({
-          branchName,
+          sourceBranch: branchName,
           targetBranch: config.baseBranch,
           prTitle,
           prBody,
-          labels: config.labels,
-          platformOptions,
+          labels: [
+            ...new Set([...config.labels, ...config.addLabels]),
+          ].map((label) => template.compile(label, config)),
+          platformOptions: getPlatformPrOptions(config),
           draftPR: config.draftPR,
         });
+        incLimitedValue(Limit.PullRequests);
         logger.info({ pr: pr.number, prTitle }, 'PR created');
       }
     } catch (err) /* istanbul ignore next */ {
@@ -394,7 +415,7 @@ export async function ensurePr(
           { branch: branchName },
           'Deleting branch due to server error'
         );
-        if (config.dryRun) {
+        if (getAdminConfig().dryRun) {
           logger.info('DRY-RUN: Would delete branch: ' + config.branchName);
         } else {
           await deleteBranch(branchName);
@@ -412,9 +433,10 @@ export async function ensurePr(
       if (config.branchAutomergeFailureMessage === 'branch status error') {
         content += '\n___\n * Branch has one or more failed status checks';
       }
+      content = platform.massageMarkdown(content);
       logger.debug('Adding branch automerge failure message to PR');
       // istanbul ignore if
-      if (config.dryRun) {
+      if (getAdminConfig().dryRun) {
         logger.info(`DRY-RUN: Would add comment to PR #${pr.number}`);
       } else {
         await platform.ensureComment({
@@ -452,89 +474,4 @@ export async function ensurePr(
     logger.error({ err }, 'Failed to ensure PR: ' + prTitle);
   }
   return { prResult: PrResult.Error };
-}
-
-export async function checkAutoMerge(
-  pr: Pr,
-  config: BranchConfig
-): Promise<boolean> {
-  logger.trace({ config }, 'checkAutoMerge');
-  const {
-    branchName,
-    automerge,
-    automergeType,
-    automergeComment,
-    requiredStatusChecks,
-    rebaseRequested,
-  } = config;
-  logger.debug(
-    { automerge, automergeType, automergeComment },
-    `Checking #${pr.number} for automerge`
-  );
-  if (automerge) {
-    logger.debug('PR is configured for automerge');
-    // Return if PR not ready for automerge
-    if (pr.isConflicted) {
-      logger.debug('PR is conflicted');
-      logger.debug({ pr });
-      return false;
-    }
-    if (requiredStatusChecks && pr.canMerge !== true) {
-      logger.debug(
-        { canMergeReason: pr.canMergeReason },
-        'PR is not ready for merge'
-      );
-      return false;
-    }
-    const branchStatus = await platform.getBranchStatus(
-      branchName,
-      requiredStatusChecks
-    );
-    if (branchStatus !== BranchStatus.green) {
-      logger.debug(
-        `PR is not ready for merge (branch status is ${branchStatus})`
-      );
-      return false;
-    }
-    // Check if it's been touched
-    if (await isBranchModified(branchName)) {
-      logger.debug('PR is ready for automerge but has been modified');
-      return false;
-    }
-    if (automergeType === 'pr-comment') {
-      logger.debug(`Applying automerge comment: ${automergeComment}`);
-      // istanbul ignore if
-      if (config.dryRun) {
-        logger.info(
-          `DRY-RUN: Would add PR automerge comment to PR #${pr.number}`
-        );
-        return false;
-      }
-      if (rebaseRequested) {
-        await platform.ensureCommentRemoval({
-          number: pr.number,
-          content: automergeComment,
-        });
-      }
-      return platform.ensureComment({
-        number: pr.number,
-        topic: null,
-        content: automergeComment,
-      });
-    }
-    // Let's merge this
-    logger.debug(`Automerging #${pr.number}`);
-    // istanbul ignore if
-    if (config.dryRun) {
-      logger.info(`DRY-RUN: Would merge PR #${pr.number}`);
-      return false;
-    }
-    const res = await platform.mergePr(pr.number, branchName);
-    if (res) {
-      logger.info({ pr: pr.number, prTitle: pr.title }, 'PR automerged');
-    }
-    return res;
-  }
-  logger.debug('No automerge');
-  return false;
 }

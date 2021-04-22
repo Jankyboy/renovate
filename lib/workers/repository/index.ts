@@ -1,8 +1,11 @@
 import fs from 'fs-extra';
-import { RenovateConfig } from '../../config';
+import { setAdminConfig } from '../../config/admin';
+import type { RenovateConfig } from '../../config/types';
 import { logger, setMeta } from '../../logger';
-import { deleteLocalFile } from '../../util/fs';
+import { deleteLocalFile, privateCacheDir } from '../../util/fs';
+import * as queue from '../../util/http/queue';
 import { addSplit, getSplits, splitInit } from '../../util/split';
+import { setBranchCache } from './cache';
 import { ensureMasterIssue } from './dependency-dashboard';
 import handleError from './error';
 import { finaliseRepo } from './finalise';
@@ -26,10 +29,12 @@ export async function renovateRepository(
 ): Promise<ProcessResult> {
   splitInit();
   let config = { ...repoConfig };
+  setAdminConfig(config);
   setMeta({ repository: config.repository });
   logger.info({ renovateVersion }, 'Repository started');
   logger.trace({ config });
   let repoResult: ProcessResult;
+  queue.clear();
   try {
     await fs.ensureDir(config.localDir);
     logger.debug('Using localDir: ' + config.localDir);
@@ -41,6 +46,7 @@ export async function renovateRepository(
     await ensureOnboardingPr(config, packageFiles, branches);
     const res = await updateRepo(config, branches);
     addSplit('update');
+    await setBranchCache(branches);
     if (res !== 'automerged') {
       await ensureMasterIssue(config, branches);
     }
@@ -57,6 +63,11 @@ export async function renovateRepository(
     } catch (err) /* istanbul ignore if */ {
       logger.warn({ err }, 'localDir deletion error');
     }
+  }
+  try {
+    await fs.remove(privateCacheDir());
+  } catch (err) /* istanbul ignore if */ {
+    logger.warn({ err }, 'privateCacheDir deletion error');
   }
   const splits = getSplits();
   logger.debug(splits, 'Repository timing splits (milliseconds)');

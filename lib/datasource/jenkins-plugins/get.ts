@@ -1,8 +1,9 @@
 import { logger } from '../../logger';
 import { ExternalHostError } from '../../types/errors/external-host-error';
 import { clone } from '../../util/clone';
+import { getElapsedMinutes } from '../../util/date';
 import { Http } from '../../util/http';
-import { GetReleasesConfig, Release, ReleaseResult } from '../common';
+import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
 import { id } from './common';
 
 const http = new Http(id);
@@ -43,10 +44,7 @@ interface JenkinsPluginsVersionsResponse {
 }
 
 function hasCacheExpired(cache: JenkinsCache<JenkinsCacheTypes>): boolean {
-  const minutesElapsed = Math.floor(
-    (new Date().getTime() - cache.lastSync.getTime()) / (60 * 1000)
-  );
-  return minutesElapsed >= cache.cacheTimeMin;
+  return getElapsedMinutes(cache.lastSync) >= cache.cacheTimeMin;
 }
 
 async function updateJenkinsCache(
@@ -71,7 +69,6 @@ function updateJenkinsPluginInfoCacheCallback(
   for (const name of Object.keys(response.plugins || [])) {
     // eslint-disable-next-line no-param-reassign
     cache.cache[name] = {
-      name,
       releases: [], // releases are stored in another cache
       sourceUrl: response.plugins[name]?.scm,
     };
@@ -85,15 +82,13 @@ function updateJenkinsPluginVersionsCacheCallback(
   const plugins = response.plugins;
   for (const name of Object.keys(plugins || [])) {
     // eslint-disable-next-line no-param-reassign
-    cache.cache[name] = Object.keys(plugins[name]).map((version) => {
-      return {
-        version,
-        downloadUrl: plugins[name][version]?.url,
-        releaseTimestamp: plugins[name][version]?.buildDate
-          ? new Date(plugins[name][version].buildDate + ' UTC')
-          : null,
-      };
-    });
+    cache.cache[name] = Object.keys(plugins[name]).map((version) => ({
+      version,
+      downloadUrl: plugins[name][version]?.url,
+      releaseTimestamp: plugins[name][version]?.buildDate
+        ? new Date(plugins[name][version].buildDate + ' UTC')
+        : null,
+    }));
   }
 }
 
@@ -109,7 +104,7 @@ async function getJenkinsUpdateCenterResponse<T>(
   };
 
   try {
-    logger.debug(`jenkins-plugins: Fetching Jenkins plugns ${cache.name}`);
+    logger.debug(`jenkins-plugins: Fetching Jenkins plugins ${cache.name}`);
     const startTime = Date.now();
     response = (await http.getJson<T>(cache.dataUrl, options)).body;
     const durationMs = Math.round(Date.now() - startTime);

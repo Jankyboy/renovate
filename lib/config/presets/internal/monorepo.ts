@@ -1,5 +1,5 @@
 import is from '@sindresorhus/is';
-import { Preset } from '../common';
+import type { Preset } from '../types';
 
 const repoGroups = {
   'ag-grid': 'https://github.com/ag-grid/ag-grid',
@@ -12,10 +12,13 @@ const repoGroups = {
     'https://github.com/arcus-azure/arcus.backgroundjobs',
   'algolia-react-instantsearch':
     'https://github.com/algolia/react-instantsearch',
+  'angular-eslint': 'https://github.com/angular-eslint/angular-eslint',
   'apollo-server': 'https://github.com/apollographql/apollo-server',
+  'aspnet-api-versioning': 'https://github.com/Microsoft/aspnet-api-versioning',
   'aspnet AspNetWebStack': 'https://github.com/aspnet/AspNetWebStack',
   'aspnet Extensions': 'https://github.com/aspnet/Extensions',
   'aws-cdk': 'https://github.com/aws/aws-cdk',
+  'aws-sdk-js-v3': 'https://github.com/aws/aws-sdk-js-v3',
   'azure azure-libraries-for-net':
     'https://github.com/Azure/azure-libraries-for-net',
   'azure azure-sdk-for-net': 'https://github.com/Azure/azure-sdk-for-net',
@@ -24,6 +27,7 @@ const repoGroups = {
   'date-io': 'https://github.com/dmtrKovalenko/date-io',
   'devextreme-reactive': 'https://github.com/DevExpress/devextreme-reactive',
   'electron-forge': 'https://github.com/electron-userland/electron-forge',
+  'feathers-databases': 'https://github.com/feathersjs/databases',
   'ember-decorators': 'https://github.com/ember-decorators/ember-decorators',
   'graphql-modules': 'https://github.com/Urigo/graphql-modules',
   'ionic-native': 'https://github.com/ionic-team/ionic-native',
@@ -37,6 +41,8 @@ const repoGroups = {
   'reactivestack-cookies': 'https://github.com/reactivestack/cookies',
   'reg-suit': 'https://github.com/reg-viz/reg-suit',
   'semantic-release': 'https://github.com/semantic-release/',
+  'System.IO.Abstractions':
+    'https://github.com/System-IO-Abstractions/System.IO.Abstractions/',
   'telus-tds': 'https://github.com/telusdigital/tds',
   'typescript-eslint': 'https://github.com/typescript-eslint/typescript-eslint',
   'typography-js': 'https://github.com/KyleAMathews/typography.js',
@@ -45,6 +51,7 @@ const repoGroups = {
   angular1: 'https://github.com/angular/angular.js',
   angular: 'https://github.com/angular/angular',
   angularcli: 'https://github.com/angular/angular-cli',
+  angularfire: 'https://github.com/angular/angularfire',
   apolloclient: 'https://github.com/apollographql/apollo-client',
   apollolink: 'https://github.com/apollographql/apollo-link',
   awsappsync: 'https://github.com/awslabs/aws-mobile-appsync-sdk-js',
@@ -56,9 +63,16 @@ const repoGroups = {
   clarity: 'https://github.com/vmware/clarity',
   commitlint: 'https://github.com/conventional-changelog/commitlint',
   docusaurus: 'https://github.com/facebook/docusaurus',
+  dotnet: [
+    'https://github.com/dotnet/aspnetcore',
+    'https://github.com/dotnet/efcore',
+    'https://github.com/dotnet/extensions',
+    'https://github.com/dotnet/runtime',
+  ],
   dropwizard: 'https://github.com/dropwizard/dropwizard',
   emotion: 'https://github.com/emotion-js/emotion',
   expo: 'https://github.com/expo/expo',
+  feathers: 'https://github.com/feathersjs/feathers',
   fimbullinter: 'https://github.com/fimbullinter/wotan',
   flopflip: 'https://github.com/tdeekens/flopflip',
   formatjs: 'https://github.com/formatjs/formatjs',
@@ -72,17 +86,20 @@ const repoGroups = {
   'graphql-toolkit': 'https://github.com/ardatan/graphql-toolkit',
   'graphql-tools': 'https://github.com/ardatan/graphql-tools',
   hamcrest: 'https://github.com/hamcrest/JavaHamcrest',
+  Hangfire: 'https://github.com/HangfireIO/Hangfire',
   hapijs: 'https://github.com/hapijs',
   infrastructure: 'https://github.com/instructure/instructure-ui',
   istanbuljs: 'https://github.com/istanbuljs/istanbuljs',
   jasmine: 'https://github.com/jasmine/jasmine',
   jersey: 'https://github.com/eclipse-ee4j/jersey',
   jest: 'https://github.com/facebook/jest',
+  junit5: 'https://github.com/junit-team/junit5',
   lerna: 'https://github.com/lerna/lerna',
   lingui: 'https://github.com/lingui/js-lingui',
   lodash: 'https://github.com/lodash/',
   loopback: 'https://github.com/strongloop/loopback-next',
   lrnwebcomponents: 'https://github.com/elmsln/lrnwebcomponents',
+  MassTransit: 'https://github.com/MassTransit/MassTransit',
   material: 'https://github.com/material-components/material-components-web',
   mdx: 'https://github.com/mdx-js/mdx',
   mui: 'https://github.com/mui-org/material-ui',
@@ -92,26 +109,31 @@ const repoGroups = {
     'https://github.com/mozilla-neutrino/neutrino-dev',
   ],
   nextjs: [
-    'https://github.com/zeit/next.js', // for compatibility
+    'https://github.com/zeit/next.js', // old repo
     'https://github.com/vercel/next.js',
   ],
+  nivo: 'https://github.com/plouc/nivo',
   ngrx: 'https://github.com/ngrx/',
   nrwl: 'https://github.com/nrwl/',
   nuxtjs: 'https://github.com/nuxt/nuxt.js',
   openfeign: 'https://github.com/OpenFeign/feign',
   opentelemetry: 'https://github.com/open-telemetry/opentelemetry-js',
   picasso: 'https://github.com/qlik-oss/picasso.js',
+  pnpjs: 'https://github.com/pnp/pnpjs',
+  playwright: 'https://github.com/Microsoft/playwright',
   pollyjs: 'https://github.com/Netflix/pollyjs',
   pouchdb: 'https://github.com/pouchdb/pouchdb',
   prisma: 'https://github.com/prisma/prisma',
   react: 'https://github.com/facebook/react',
   reactrouter: 'https://github.com/ReactTraining/react-router',
   reakit: 'https://github.com/reakit/reakit',
+  redwood: 'https://github.com/redwoodjs/redwood',
   remark: 'https://github.com/remarkjs/remark',
   router5: 'https://github.com/router5/router5',
   sentry: 'https://github.com/getsentry/sentry-javascript',
   springfox: 'https://github.com/springfox/springfox',
   sanity: 'https://github.com/sanity-io/sanity',
+  Steeltoe: 'https://github.com/SteeltoeOSS/steeltoe',
   storybook: 'https://github.com/storybookjs/storybook',
   strapi: 'https://github.com/strapi/strapi',
   stryker: 'https://github.com/stryker-mutator/stryker',
@@ -128,6 +150,7 @@ const repoGroups = {
 
 const patternGroups = {
   babel6: '^babel6$',
+  clarity: ['^@cds/', '^@clr/'], // https://github.com/vmware/clarity/issues/5235
   wordpress: '^@wordpress/',
   angularmaterial: ['^@angular/material', '^@angular/cdk'],
   'aws-java-sdk': '^com.amazonaws:aws-java-sdk-',
@@ -140,12 +163,12 @@ export const presets: Record<string, Preset> = {};
 for (const [name, value] of Object.entries(repoGroups)) {
   presets[name] = {
     description: `${name} monorepo`,
-    sourceUrlPrefixes: is.array(value) ? value : [value],
+    matchSourceUrlPrefixes: is.array(value) ? value : [value],
   };
 }
 for (const [name, value] of Object.entries(patternGroups)) {
   presets[name] = {
     description: `${name} monorepo`,
-    packagePatterns: is.array(value) ? value : [value],
+    matchPackagePatterns: is.array(value) ? value : [value],
   };
 }

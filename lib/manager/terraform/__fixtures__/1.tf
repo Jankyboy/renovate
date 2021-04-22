@@ -6,6 +6,10 @@ module "bar" {
   source = "github.com/hashicorp/example?ref=next"
 }
 
+module "repo-with-non-semver-ref" {
+  source = "github.com/githubuser/myrepo//terraform/modules/moduleone?ref=tfmodule_one-v0.0.9"
+}
+
 module "repo-with-dot" {
   source = "github.com/hashicorp/example.2.3?ref=v1.0.0"
 }
@@ -73,6 +77,31 @@ module "vote_service_sg" {
       cidr_blocks = "0.0.0.0/0"
     },
   ]
+}
+
+module "addons_aws" {
+
+  providers = {
+    helm       = helm.core
+    kubectl    = kubectl.core
+    kubernetes = kubernetes.core
+  }
+
+  cluster-name = data.aws_eks_cluster.core_cluster.id
+
+  aws-ebs-csi-driver = {
+    enabled          = true
+    is_default_class = true
+    version = "1.0.0"
+  }
+
+
+  source  = "particuleio/addons/kubernetes//modules/aws"
+  version = "1.28.3"
+
+  aws-load-balancer-controller = {
+    enabled = true
+  }
 }
 
 module "consul" {
@@ -177,6 +206,14 @@ terraform {
     docker = {
       source  = "terraform-providers/docker"
       version = "2.7.2"
+    }
+    aws = {
+      source  = "aws"
+      version = "2.7.0"
+    }
+    // falls back block name for source
+    azurerm = {
+      version = "=2.27.0"
     }
     invalid = {
       source  = "//hashicorp/helm"

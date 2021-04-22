@@ -1,4 +1,6 @@
 import { readFileSync } from 'fs';
+import { getName } from '../../../test/util';
+import { setAdminConfig } from '../../config/admin';
 import { extractPackageFile } from './extract';
 
 const requirements1 = readFileSync(
@@ -34,19 +36,25 @@ const requirements7 = readFileSync(
   'utf8'
 );
 
-describe('lib/manager/pip_requirements/extract', () => {
+describe(getName(__filename), () => {
   beforeEach(() => {
     delete process.env.PIP_TEST_TOKEN;
-    global.trustLevel = 'low';
+    setAdminConfig();
   });
   afterEach(() => {
     delete process.env.PIP_TEST_TOKEN;
-    global.trustLevel = 'low';
+    setAdminConfig();
   });
   describe('extractPackageFile()', () => {
     let config;
+    const OLD_ENV = process.env;
     beforeEach(() => {
       config = { registryUrls: ['AnExistingDefaultUrl'] };
+      process.env = { ...OLD_ENV };
+      delete process.env.PIP_INDEX_URL;
+    });
+    afterEach(() => {
+      process.env = OLD_ENV;
     });
     it('returns null for empty', () => {
       expect(
@@ -121,7 +129,7 @@ describe('lib/manager/pip_requirements/extract', () => {
     });
     it('should replace env vars in high trust mode', () => {
       process.env.PIP_TEST_TOKEN = 'its-a-secret';
-      global.trustLevel = 'high';
+      setAdminConfig({ exposeAllEnv: true });
       const res = extractPackageFile(requirements7, 'unused_file_name', {});
       expect(res.registryUrls).toEqual([
         'https://pypi.org/pypi/',

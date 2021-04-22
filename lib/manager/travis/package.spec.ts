@@ -1,3 +1,4 @@
+import { getName } from '../../../test/util';
 import { getConfig } from '../../config/defaults';
 import { getPkgReleases as _getPkgReleases } from '../../datasource';
 import { getPackageUpdates } from './package';
@@ -7,10 +8,22 @@ const getPkgReleases: any = _getPkgReleases;
 
 jest.mock('../../datasource');
 
-describe('lib/manager/travis/package', () => {
+describe(getName(__filename), () => {
   describe('getPackageUpdates', () => {
     // TODO: should be `PackageUpdateConfig`
     let config: any;
+    const RealDate = Date;
+
+    beforeAll(() => {
+      global.Date = class FakeDate extends RealDate {
+        constructor(arg?: number | string | Date) {
+          super(arg ?? '2020-10-28');
+        }
+      } as any;
+    });
+    afterAll(() => {
+      global.Date = RealDate;
+    });
     beforeEach(() => {
       config = {
         ...defaultConfig,
@@ -18,17 +31,17 @@ describe('lib/manager/travis/package', () => {
     });
     it('returns empty if missing supportPolicy', async () => {
       config.currentValue = ['6', '8'];
-      expect(await getPackageUpdates(config)).toEqual([]);
+      expect(await getPackageUpdates(config)).toEqual({ updates: [] });
     });
     it('returns empty if invalid supportPolicy', async () => {
       config.currentValue = ['6', '8'];
       config.supportPolicy = ['foo'];
-      expect(await getPackageUpdates(config)).toEqual([]);
+      expect(await getPackageUpdates(config)).toEqual({ updates: [] });
     });
     it('returns empty if matching', async () => {
-      config.currentValue = ['12'];
+      config.currentValue = ['12', '14'];
       config.supportPolicy = ['lts_active'];
-      expect(await getPackageUpdates(config)).toEqual([]);
+      expect(await getPackageUpdates(config)).toEqual({ updates: [] });
     });
     it('returns result if needing updates', async () => {
       config.currentValue = ['6', '8', '10'];

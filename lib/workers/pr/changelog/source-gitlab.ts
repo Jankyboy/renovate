@@ -1,14 +1,14 @@
 import URL from 'url';
-import { Release } from '../../../datasource';
+import type { Release } from '../../../datasource/types';
 import { logger } from '../../../logger';
 import * as memCache from '../../../util/cache/memory';
 import * as packageCache from '../../../util/cache/package';
 import { regEx } from '../../../util/regex';
 import * as allVersioning from '../../../versioning';
-import { BranchUpgradeConfig } from '../../common';
-import { ChangeLogRelease, ChangeLogResult } from './common';
+import type { BranchUpgradeConfig } from '../../types';
 import { getTags } from './gitlab';
 import { addReleaseNotes } from './release-notes';
+import type { ChangeLogRelease, ChangeLogResult } from './types';
 
 const cacheNamespace = 'changelog-gitlab-release';
 
@@ -18,7 +18,7 @@ function getCachedTags(
   repository: string
 ): Promise<string[]> {
   const cacheKey = `getTags-${endpoint}-${versionScheme}-${repository}`;
-  const cachedResult = memCache.get(cacheKey);
+  const cachedResult = memCache.get<Promise<string[]>>(cacheKey);
   // istanbul ignore if
   if (cachedResult !== undefined) {
     return cachedResult;
@@ -30,8 +30,8 @@ function getCachedTags(
 
 export async function getChangeLogJSON({
   versioning,
-  fromVersion,
-  toVersion,
+  currentVersion,
+  newVersion,
   sourceUrl,
   releases,
   depName,
@@ -91,8 +91,8 @@ export async function getChangeLogJSON({
   const changelogReleases: ChangeLogRelease[] = [];
   // compare versions
   const include = (v: string): boolean =>
-    version.isGreaterThan(v, fromVersion) &&
-    !version.isGreaterThan(v, toVersion);
+    version.isGreaterThan(v, currentVersion) &&
+    !version.isGreaterThan(v, newVersion);
   for (let i = 1; i < validReleases.length; i += 1) {
     const prev = validReleases[i - 1];
     const next = validReleases[i];

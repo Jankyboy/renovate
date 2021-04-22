@@ -7,23 +7,26 @@ import * as memCache from '../../util/cache/memory';
 import * as packageCache from '../../util/cache/package';
 import * as hostRules from '../../util/host-rules';
 import { Http, HttpOptions } from '../../util/http';
-import { GetReleasesConfig, ReleaseResult } from '../common';
+import * as composerVersioning from '../../versioning/composer';
+import type { GetReleasesConfig, ReleaseResult } from '../types';
 
 export const id = 'packagist';
+export const customRegistrySupport = true;
 export const defaultRegistryUrls = ['https://packagist.org'];
+export const defaultVersioning = composerVersioning.id;
 export const registryStrategy = 'hunt';
 
 const http = new Http(id);
 
 // We calculate auth at this datasource layer so that we can know whether it's safe to cache or not
 function getHostOpts(url: string): HttpOptions {
-  const opts: HttpOptions = {};
+  let opts: HttpOptions = {};
   const { username, password } = hostRules.find({
     hostType: id,
     url,
   });
   if (username && password) {
-    Object.assign(opts, { username, password });
+    opts = { ...opts, username, password };
   }
   return opts;
 }
@@ -113,7 +116,7 @@ async function getPackagistFile(
   const cachedResult = await packageCache.get(cacheNamespace, cacheKey);
   // istanbul ignore if
   if (cachedResult && cachedResult.sha256 === sha256) {
-    return cachedResult.res;
+    return cachedResult.res as Promise<PackagistFile>;
   }
   const res = (await http.getJson<PackagistFile>(regUrl + '/' + fileName, opts))
     .body;
@@ -186,7 +189,6 @@ async function getAllPackages(regUrl: string): Promise<AllPackages | null> {
       if (res.packages) {
         for (const [key, val] of Object.entries(res.packages)) {
           const dep = extractDepReleases(val);
-          dep.name = key;
           includesPackages[key] = dep;
         }
       }
@@ -204,9 +206,9 @@ async function getAllPackages(regUrl: string): Promise<AllPackages | null> {
 
 function getAllCachedPackages(regUrl: string): Promise<AllPackages | null> {
   const cacheKey = `packagist-${regUrl}`;
-  const cachedResult = memCache.get(cacheKey);
+  const cachedResult = memCache.get<Promise<AllPackages | null>>(cacheKey);
   // istanbul ignore if
-  if (cachedResult) {
+  if (cachedResult !== undefined) {
     return cachedResult;
   }
   const promisedRes = getAllPackages(regUrl);
@@ -231,7 +233,6 @@ async function packagistOrgLookup(name: string): Promise<ReleaseResult> {
   const res = (await http.getJson<any>(pkgUrl)).body.packages[name];
   if (res) {
     dep = extractDepReleases(res);
-    dep.name = name;
     logger.trace({ dep }, 'dep');
   }
   const cacheMinutes = 10;
@@ -258,7 +259,6 @@ async function packageLookup(
     } = allPackages;
     if (packages?.[name]) {
       const dep = extractDepReleases(packages[name]);
-      dep.name = name;
       return dep;
     }
     if (includesPackages?.[name]) {
@@ -283,7 +283,6 @@ async function packageLookup(
       name
     ];
     const dep = extractDepReleases(versions);
-    dep.name = name;
     logger.trace({ dep }, 'dep');
     return dep;
   } catch (err) /* istanbul ignore next */ {

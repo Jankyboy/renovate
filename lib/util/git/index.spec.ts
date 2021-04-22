@@ -1,42 +1,47 @@
 import fs from 'fs-extra';
 import Git from 'simple-git';
 import tmp from 'tmp-promise';
+import { getName } from '../../../test/util';
 import * as git from '.';
 
-describe('platform/git', () => {
+describe(getName(__filename), () => {
   jest.setTimeout(15000);
 
   const masterCommitDate = new Date();
   masterCommitDate.setMilliseconds(0);
   let base: tmp.DirectoryResult;
   let origin: tmp.DirectoryResult;
+  let defaultBranch: string;
+
   beforeAll(async () => {
     base = await tmp.dir({ unsafeCleanup: true });
-    const repo = Git(base.path).silent(true);
+    const repo = Git(base.path);
     await repo.init();
+    defaultBranch = (await repo.raw('branch', '--show-current')).trim();
     await repo.addConfig('user.email', 'Jest@example.com');
     await repo.addConfig('user.name', 'Jest');
     await fs.writeFile(base.path + '/past_file', 'past');
+    await repo.addConfig('commit.gpgsign', 'false');
     await repo.add(['past_file']);
     await repo.commit('past message');
 
-    await repo.checkout(['-b', 'renovate/past_branch', 'master']);
-    await repo.checkout(['-b', 'develop', 'master']);
+    await repo.checkout(['-b', 'renovate/past_branch', defaultBranch]);
+    await repo.checkout(['-b', 'develop', defaultBranch]);
 
-    await repo.checkout('master');
-    await fs.writeFile(base.path + '/master_file', 'master');
+    await repo.checkout(defaultBranch);
+    await fs.writeFile(base.path + '/master_file', defaultBranch);
     await fs.writeFile(base.path + '/file_to_delete', 'bye');
     await repo.add(['master_file', 'file_to_delete']);
     await repo.commit('master message', [
       '--date=' + masterCommitDate.toISOString(),
     ]);
 
-    await repo.checkout(['-b', 'renovate/future_branch', 'master']);
+    await repo.checkout(['-b', 'renovate/future_branch', defaultBranch]);
     await fs.writeFile(base.path + '/future_file', 'future');
     await repo.add(['future_file']);
     await repo.commit('future message');
 
-    await repo.checkoutBranch('renovate/modified_branch', 'master');
+    await repo.checkoutBranch('renovate/modified_branch', defaultBranch);
     await fs.writeFile(base.path + '/base_file', 'base');
     await repo.add(['base_file']);
     await repo.commit('base message');
@@ -44,15 +49,15 @@ describe('platform/git', () => {
     await repo.add(['modified_file']);
     await repo.commit('modification');
 
-    await repo.checkoutBranch('renovate/custom_author', 'master');
+    await repo.checkoutBranch('renovate/custom_author', defaultBranch);
     await fs.writeFile(base.path + '/custom_file', 'custom');
     await repo.add(['custom_file']);
     await repo.addConfig('user.email', 'custom@example.com');
     await repo.commit('custom message');
 
-    await repo.checkoutBranch('renovate/equal_branch', 'master');
+    await repo.checkoutBranch('renovate/equal_branch', defaultBranch);
 
-    await repo.checkout('master');
+    await repo.checkout(defaultBranch);
   });
 
   let tmpDir: tmp.DirectoryResult;
@@ -61,6 +66,7 @@ describe('platform/git', () => {
     origin = await tmp.dir({ unsafeCleanup: true });
     const repo = Git(origin.path);
     await repo.clone(base.path, '.', ['--bare']);
+    await repo.addConfig('commit.gpgsign', 'false');
     tmpDir = await tmp.dir({ unsafeCleanup: true });
     await git.initRepo({
       localDir: tmpDir.path,
@@ -68,7 +74,7 @@ describe('platform/git', () => {
       gitAuthorName: 'Jest',
       gitAuthorEmail: 'Jest@example.com',
     });
-    await git.setBranchPrefix('renovate/');
+    await git.setUserRepoConfig({ branchPrefix: 'renovate/' });
     await git.syncGit();
   });
 
@@ -83,7 +89,7 @@ describe('platform/git', () => {
 
   describe('checkoutBranch(branchName)', () => {
     it('sets the base branch as master', async () => {
-      await expect(git.checkoutBranch('master')).resolves.not.toThrow();
+      await expect(git.checkoutBranch(defaultBranch)).resolves.not.toThrow();
     });
     it('sets non-master base branch', async () => {
       await expect(git.checkoutBranch('develop')).resolves.not.toThrow();
@@ -94,10 +100,11 @@ describe('platform/git', () => {
       expect(await git.getFileList()).toMatchSnapshot();
     });
     it('should exclude submodules', async () => {
-      const repo = Git(base.path).silent(true);
+      const repo = Git(base.path);
       await repo.submoduleAdd(base.path, 'submodule');
       await repo.commit('Add submodule');
       await git.initRepo({
+        cloneSubmodules: true,
         localDir: tmpDir.path,
         url: base.path,
       });
@@ -120,7 +127,7 @@ describe('platform/git', () => {
       const res = git.getBranchList();
       expect(res).toContain('renovate/past_branch');
       expect(res).toContain('renovate/future_branch');
-      expect(res).toContain('master');
+      expect(res).toContain(defaultBranch);
     });
   });
   describe('isBranchStale()', () => {
@@ -136,11 +143,20 @@ describe('platform/git', () => {
     });
   });
   describe('isBranchModified()', () => {
-    it('should return true when author matches', async () => {
+    it('should return false when branch is not found', async () => {
+      expect(await git.isBranchModified('renovate/not_found')).toBe(false);
+    });
+    it('should return false when author matches', async () => {
       expect(await git.isBranchModified('renovate/future_branch')).toBe(false);
       expect(await git.isBranchModified('renovate/future_branch')).toBe(false);
     });
-    it('should return false when custom author', async () => {
+    it('should return false when author is ignored', async () => {
+      await git.setUserRepoConfig({
+        gitIgnoredAuthors: ['custom@example.com'],
+      });
+      expect(await git.isBranchModified('renovate/custom_author')).toBe(false);
+    });
+    it('should return true when custom author is unknown', async () => {
       expect(await git.isBranchModified('renovate/custom_author')).toBe(true);
     });
   });
@@ -148,14 +164,23 @@ describe('platform/git', () => {
   describe('getBranchCommit(branchName)', () => {
     it('should return same value for equal refs', () => {
       const hex = git.getBranchCommit('renovate/equal_branch');
-      expect(hex).toBe(git.getBranchCommit('master'));
+      expect(hex).toBe(git.getBranchCommit(defaultBranch));
       expect(hex).toHaveLength(40);
     });
     it('should return null', () => {
       expect(git.getBranchCommit('not_found')).toBeNull();
     });
   });
-
+  describe('getBranchParentSha(branchName)', () => {
+    it('should return sha if found', async () => {
+      const parentSha = await git.getBranchParentSha('renovate/future_branch');
+      expect(parentSha).toHaveLength(40);
+      expect(parentSha).toEqual(git.getBranchCommit(defaultBranch));
+    });
+    it('should return false if not found', async () => {
+      expect(await git.getBranchParentSha('not_found')).toBeNull();
+    });
+  });
   describe('getBranchFiles(branchName)', () => {
     it('detects changed files compared to current base branch', async () => {
       const file = {
@@ -180,7 +205,7 @@ describe('platform/git', () => {
       const merged = await Git(origin.path).branch([
         '--verbose',
         '--merged',
-        'master',
+        defaultBranch,
       ]);
       expect(merged.all).toContain('renovate/future_branch');
     });
@@ -197,7 +222,7 @@ describe('platform/git', () => {
   });
   describe('getBranchLastCommitTime', () => {
     it('should return a Date', async () => {
-      const time = await git.getBranchLastCommitTime('master');
+      const time = await git.getBranchLastCommitTime(defaultBranch);
       expect(time).toEqual(masterCommitDate);
     });
     it('handles error', async () => {
@@ -208,7 +233,7 @@ describe('platform/git', () => {
   describe('getFile(filePath, branchName)', () => {
     it('gets the file', async () => {
       const res = await git.getFile('master_file');
-      expect(res).toBe('master');
+      expect(res).toBe(defaultBranch);
     });
     it('short cuts 404', async () => {
       const res = await git.getFile('some-missing-path');
@@ -273,21 +298,19 @@ describe('platform/git', () => {
         files,
         message: 'Update something',
       });
-      expect(commit).not.toBeNull();
+      expect(commit).toBeNull();
     });
     it('does not push when no diff', async () => {
-      const branchName = 'renovate/something';
-      const local = Git(tmpDir.path);
-      await local.push('origin', `master:${branchName}`);
-      await local.fetch([
-        'origin',
-        `refs/heads/${branchName}:refs/remotes/origin/${branchName}`,
-      ]);
-      const files = [];
+      const files = [
+        {
+          name: 'future_file',
+          contents: 'future',
+        },
+      ];
       const commit = await git.commitFiles({
-        branchName,
+        branchName: 'renovate/future_branch',
         files,
-        message: 'Update something',
+        message: 'No change update',
       });
       expect(commit).toBeNull();
     });
@@ -333,12 +356,12 @@ describe('platform/git', () => {
 
   describe('initRepo())', () => {
     it('should fetch latest', async () => {
-      const repo = Git(base.path).silent(true);
-      await repo.checkout(['-b', 'test', 'master']);
+      const repo = Git(base.path);
+      await repo.checkout(['-b', 'test', defaultBranch]);
       await fs.writeFile(base.path + '/test', 'lorem ipsum');
       await repo.add(['test']);
       await repo.commit('past message2');
-      await repo.checkout('master');
+      await repo.checkout(defaultBranch);
 
       expect(git.branchExists('test')).toBeFalsy();
 
@@ -361,19 +384,19 @@ describe('platform/git', () => {
     });
 
     it('should set branch prefix', async () => {
-      const repo = Git(base.path).silent(true);
-      await repo.checkout(['-b', 'renovate/test', 'master']);
+      const repo = Git(base.path);
+      await repo.checkout(['-b', 'renovate/test', defaultBranch]);
       await fs.writeFile(base.path + '/test', 'lorem ipsum');
       await repo.add(['test']);
       await repo.commit('past message2');
-      await repo.checkout('master');
+      await repo.checkout(defaultBranch);
 
       await git.initRepo({
         localDir: tmpDir.path,
         url: base.path,
       });
 
-      await git.setBranchPrefix('renovate/');
+      await git.setUserRepoConfig({ branchPrefix: 'renovate/' });
       expect(git.branchExists('renovate/test')).toBe(true);
 
       await git.initRepo({
@@ -384,12 +407,12 @@ describe('platform/git', () => {
       await repo.checkout('renovate/test');
       await repo.commit('past message3', ['--amend']);
 
-      await git.setBranchPrefix('renovate/');
+      await git.setUserRepoConfig({ branchPrefix: 'renovate/' });
       expect(git.branchExists('renovate/test')).toBe(true);
     });
 
     it('should fail clone ssh submodule', async () => {
-      const repo = Git(base.path).silent(true);
+      const repo = Git(base.path);
       await fs.writeFile(
         base.path + '/.gitmodules',
         '[submodule "test"]\npath=test\nurl=ssh://0.0.0.0'
@@ -405,6 +428,7 @@ describe('platform/git', () => {
       ]);
       await repo.commit('Add submodule');
       await git.initRepo({
+        cloneSubmodules: true,
         localDir: tmpDir.path,
         url: base.path,
       });
@@ -422,9 +446,9 @@ describe('platform/git', () => {
           '-c': 'extra.clone.config=test-extra-config-value',
         },
       });
-      git.getBranchCommit('master');
+      git.getBranchCommit(defaultBranch);
       await git.syncGit();
-      const repo = Git(tmpDir.path).silent(true);
+      const repo = Git(tmpDir.path);
       const res = (await repo.raw(['config', 'extra.clone.config'])).trim();
       expect(res).toBe('test-extra-config-value');
     });

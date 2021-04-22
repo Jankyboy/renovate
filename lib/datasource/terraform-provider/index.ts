@@ -2,14 +2,17 @@ import URL from 'url';
 import { logger } from '../../logger';
 import * as packageCache from '../../util/cache/package';
 import { Http } from '../../util/http';
-import { GetReleasesConfig, ReleaseResult } from '../common';
+import * as hashicorpVersioning from '../../versioning/hashicorp';
 import { getTerraformServiceDiscoveryResult } from '../terraform-module';
+import type { GetReleasesConfig, ReleaseResult } from '../types';
 
 export const id = 'terraform-provider';
+export const customRegistrySupport = true;
 export const defaultRegistryUrls = [
   'https://registry.terraform.io',
   'https://releases.hashicorp.com',
 ];
+export const defaultVersioning = hashicorpVersioning.id;
 export const registryStrategy = 'hunt';
 
 const http = new Http(id);
@@ -20,6 +23,8 @@ interface TerraformProvider {
   provider: string;
   source?: string;
   versions: string[];
+  version: string;
+  published_at: string;
 }
 
 interface TerraformProviderReleaseBackend {
@@ -44,8 +49,6 @@ async function queryRegistry(
   const backendURL = `${registryURL}${serviceDiscovery['providers.v1']}${repository}`;
   const res = (await http.getJson<TerraformProvider>(backendURL)).body;
   const dep: ReleaseResult = {
-    name: repository,
-    versions: {},
     releases: null,
   };
   if (res.source) {
@@ -54,6 +57,14 @@ async function queryRegistry(
   dep.releases = res.versions.map((version) => ({
     version,
   }));
+  // set published date for latest release
+  const latestVersion = dep.releases.find(
+    (release) => res.version === release.version
+  );
+  // istanbul ignore else
+  if (latestVersion) {
+    latestVersion.releaseTimestamp = res.published_at;
+  }
   dep.homepage = `${registryURL}/providers/${repository}`;
   logger.trace({ dep }, 'dep');
   return dep;
@@ -69,9 +80,12 @@ async function queryReleaseBackend(
   const backendURL = registryURL + `/index.json`;
   const res = (await http.getJson<TerraformProviderReleaseBackend>(backendURL))
     .body;
+
+  if (!res[backendLookUpName]) {
+    return null;
+  }
+
   const dep: ReleaseResult = {
-    name: repository,
-    versions: {},
     releases: null,
     sourceUrl: `https://github.com/terraform-providers/${backendLookUpName}`,
   };

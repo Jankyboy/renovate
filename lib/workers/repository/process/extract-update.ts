@@ -1,11 +1,11 @@
 import is from '@sindresorhus/is';
 import hasha from 'hasha';
-import { RenovateConfig } from '../../../config';
+import type { RenovateConfig } from '../../../config/types';
 import { logger } from '../../../logger';
-import { PackageFile } from '../../../manager/common';
+import type { PackageFile } from '../../../manager/types';
 import { getCache } from '../../../util/cache/repository';
 import { checkoutBranch, getBranchCommit } from '../../../util/git';
-import { BranchConfig } from '../../common';
+import type { BranchConfig } from '../../types';
 import { extractAllDependencies } from '../extract';
 import { branchifyUpgrades } from '../updates/branchify';
 import { raiseDeprecationWarnings } from './deprecated';
@@ -53,9 +53,10 @@ export async function extract(
   logger.debug('extract()');
   const { baseBranch } = config;
   const baseBranchSha = getBranchCommit(baseBranch);
-  let packageFiles;
+  let packageFiles: Record<string, PackageFile[]>;
   const cache = getCache();
-  const cachedExtract = cache?.scan?.[baseBranch];
+  cache.scan ||= {};
+  const cachedExtract = cache.scan[baseBranch];
   const configHash = hasha(JSON.stringify(config));
   // istanbul ignore if
   if (
@@ -64,6 +65,18 @@ export async function extract(
   ) {
     logger.debug({ baseBranch, baseBranchSha }, 'Found cached extract');
     packageFiles = cachedExtract.packageFiles;
+    try {
+      for (const files of Object.values(packageFiles)) {
+        for (const file of files) {
+          for (const dep of file.deps) {
+            delete dep.updates;
+          }
+        }
+      }
+      logger.debug('Deleted cached dep updates');
+    } catch (err) {
+      logger.info({ err }, 'Error deleting cached dep updates');
+    }
   } else {
     await checkoutBranch(baseBranch);
     packageFiles = await extractAllDependencies(config);
@@ -96,12 +109,12 @@ export async function lookup(
   packageFiles: Record<string, PackageFile[]>
 ): Promise<ExtractResult> {
   await fetchUpdates(config, packageFiles);
-  logger.debug({ config: packageFiles }, 'packageFiles with updates');
   await raiseDeprecationWarnings(config, packageFiles);
   const { branches, branchList } = await branchifyUpgrades(
     config,
     packageFiles
   );
+  logger.debug({ config: packageFiles }, 'packageFiles with updates');
   sortBranches(branches);
   return { branches, branchList, packageFiles };
 }

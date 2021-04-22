@@ -1,6 +1,6 @@
 import { logger } from '../../../logger';
 import * as template from '../../../util/template';
-import { BranchConfig } from '../../common';
+import type { BranchConfig } from '../../types';
 
 type TableDefinition = {
   header: string;
@@ -8,7 +8,7 @@ type TableDefinition = {
 };
 
 function getTableDefinition(config: BranchConfig): TableDefinition[] {
-  const res = [];
+  const res: TableDefinition[] = [];
   for (const header of config.prBodyColumns) {
     const value = config.prBodyDefinitions[header];
     res.push({ header, value });

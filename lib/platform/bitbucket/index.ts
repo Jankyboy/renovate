@@ -1,18 +1,15 @@
 import URL from 'url';
 import is from '@sindresorhus/is';
 import parseDiff from 'parse-diff';
-import {
-  REPOSITORY_DISABLED,
-  REPOSITORY_NOT_FOUND,
-} from '../../constants/error-messages';
+import { REPOSITORY_NOT_FOUND } from '../../constants/error-messages';
 import { PLATFORM_TYPE_BITBUCKET } from '../../constants/platforms';
 import { logger } from '../../logger';
-import { BranchStatus, PrState } from '../../types';
+import { BranchStatus, PrState, VulnerabilityAlert } from '../../types';
 import * as git from '../../util/git';
 import * as hostRules from '../../util/host-rules';
 import { BitbucketHttp, setBaseUrl } from '../../util/http/bitbucket';
 import { sanitize } from '../../util/sanitize';
-import {
+import type {
   BranchStatusConfig,
   CreatePRConfig,
   EnsureCommentConfig,
@@ -27,8 +24,7 @@ import {
   RepoParams,
   RepoResult,
   UpdatePrConfig,
-  VulnerabilityAlert,
-} from '../common';
+} from '../types';
 import { smartTruncate } from '../utils/pr-body';
 import { readOnlyIssueBody } from '../utils/read-only-issue-body';
 import * as comments from './comments';
@@ -43,7 +39,9 @@ let config: utils.Config = {} as any;
 
 const defaults = { endpoint: BITBUCKET_PROD_ENDPOINT };
 
-export function initPlatform({
+let renovateUserUuid: string;
+
+export async function initPlatform({
   endpoint,
   username,
   password,
@@ -60,6 +58,26 @@ export function initPlatform({
     defaults.endpoint = endpoint;
   }
   setBaseUrl(defaults.endpoint);
+  renovateUserUuid = null;
+  try {
+    const { uuid } = (
+      await bitbucketHttp.getJson<{ uuid: string }>('/2.0/user', {
+        username,
+        password,
+        useCache: false,
+      })
+    ).body;
+    renovateUserUuid = uuid;
+  } catch (err) {
+    if (
+      err.statusCode === 403 &&
+      err.body?.error?.detail?.required?.includes('account')
+    ) {
+      logger.warn(`Bitbucket: missing 'account' scope for password`);
+    } else {
+      logger.debug({ err }, 'Unknown error fetching Bitbucket user identity');
+    }
+  }
   // TODO: Add a connection check that endpoint/username/password combination are valid
   const platformConfig: PlatformResult = {
     endpoint: endpoint || BITBUCKET_PROD_ENDPOINT,
@@ -81,23 +99,31 @@ export async function getRepos(): Promise<string[]> {
   }
 }
 
-export async function getJsonFile(fileName: string): Promise<any | null> {
-  try {
-    return (
-      await bitbucketHttp.getJson(
-        `/2.0/repositories/${config.repository}/src/${config.defaultBranch}/${fileName}`
-      )
-    ).body;
-  } catch (err) /* istanbul ignore next */ {
-    return null;
-  }
+export async function getRawFile(
+  fileName: string,
+  repo: string = config.repository
+): Promise<string | null> {
+  // See: https://developer.atlassian.com/bitbucket/api/2/reference/resource/repositories/%7Bworkspace%7D/%7Brepo_slug%7D/src/%7Bcommit%7D/%7Bpath%7D
+  const path = fileName;
+  const url = `/2.0/repositories/${repo}/src/HEAD/${path}`;
+  const res = await bitbucketHttp.get(url);
+  return res.body;
+}
+
+export async function getJsonFile(
+  fileName: string,
+  repo: string = config.repository
+): Promise<any | null> {
+  const raw = await getRawFile(fileName, repo);
+  return JSON.parse(raw);
 }
 
 // Initialize bitbucket by getting base branch and SHA
 export async function initRepo({
   repository,
   localDir,
-  optimizeForDisabled,
+  cloneSubmodules,
+  ignorePrAuthor,
 }: RepoParams): Promise<RepoResult> {
   logger.debug(`initRepo("${repository}")`);
   const opts = hostRules.find({
@@ -107,6 +133,7 @@ export async function initRepo({
   config = {
     repository,
     username: opts.username,
+    ignorePrAuthor,
   } as utils.Config;
   let info: utils.RepoInfo;
   try {
@@ -119,22 +146,12 @@ export async function initRepo({
     );
     config.defaultBranch = info.mainbranch;
 
-    if (optimizeForDisabled) {
-      interface RenovateConfig {
-        enabled: boolean;
-      }
-
-      const renovateConfig: RenovateConfig = await getJsonFile('renovate.json');
-      if (renovateConfig && renovateConfig.enabled === false) {
-        throw new Error(REPOSITORY_DISABLED);
-      }
-    }
-
-    Object.assign(config, {
+    config = {
+      ...config,
       owner: info.owner,
       mergeMethod: info.mergeMethod,
       has_issues: info.has_issues,
-    });
+    };
 
     logger.debug(`${repository} owner = ${config.owner}`);
   } catch (err) /* istanbul ignore next */ {
@@ -165,6 +182,7 @@ export async function initRepo({
     url,
     gitAuthorName: global.gitAuthor?.name,
     gitAuthorEmail: global.gitAuthor?.email,
+    cloneSubmodules,
   });
   const repoConfig: RepoResult = {
     defaultBranch: info.mainbranch,
@@ -175,7 +193,7 @@ export async function initRepo({
 
 // Returns true if repository has rule enforcing PRs are up-to-date with base branch before merging
 export function getRepoForceRebase(): Promise<boolean> {
-  // BB doesnt have an option to flag staled branches
+  // BB doesn't have an option to flag staled branches
   return Promise.resolve(false);
 }
 
@@ -197,7 +215,14 @@ export async function getPrList(): Promise<Pr[]> {
     let url = `/2.0/repositories/${config.repository}/pullrequests?`;
     url += utils.prStates.all.map((state) => 'state=' + state).join('&');
     const prs = await utils.accumulateValues(url, undefined, undefined, 50);
-    config.prList = prs.map(utils.prInfo);
+    config.prList = prs
+      .filter((pr) => {
+        const prAuthorId = pr?.author?.uuid;
+        return renovateUserUuid && prAuthorId && !config.ignorePrAuthor
+          ? renovateUserUuid === prAuthorId
+          : true;
+      })
+      .map(utils.prInfo);
     logger.debug({ length: config.prList.length }, 'Retrieved Pull Requests');
   }
   return config.prList;
@@ -212,7 +237,7 @@ export async function findPr({
   const prList = await getPrList();
   const pr = prList.find(
     (p) =>
-      p.branchName === branchName &&
+      p.sourceBranch === branchName &&
       (!prTitle || p.title === prTitle) &&
       matchesState(p.state, state)
   );
@@ -442,7 +467,7 @@ async function closeIssue(issueNumber: number): Promise<void> {
   );
 }
 
-export function getPrBody(input: string): string {
+export function massageMarkdown(input: string): string {
   // Remove any HTML we use
   return smartTruncate(input, 50000)
     .replace(
@@ -461,7 +486,7 @@ export async function ensureIssue({
   body,
 }: EnsureIssueConfig): Promise<EnsureIssueResult | null> {
   logger.debug(`ensureIssue()`);
-  const description = getPrBody(sanitize(body));
+  const description = massageMarkdown(sanitize(body));
 
   /* istanbul ignore if */
   if (!config.has_issues) {
@@ -528,12 +553,10 @@ export async function ensureIssue({
   return null;
 }
 
-export /* istanbul ignore next */ async function getIssueList(): Promise<
-  Issue[]
-> {
+/* istanbul ignore next */
+export async function getIssueList(): Promise<Issue[]> {
   logger.debug(`getIssueList()`);
 
-  /* istanbul ignore if */
   if (!config.has_issues) {
     logger.debug('Issues are disabled - cannot getIssueList');
     return [];
@@ -550,9 +573,9 @@ export /* istanbul ignore next */ async function getIssueList(): Promise<
         await bitbucketHttp.getJson<{ values: Issue[] }>(
           `/2.0/repositories/${config.repository}/issues?q=${filter}`
         )
-      ).body.values || /* istanbul ignore next */ []
+      ).body.values || []
     );
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) {
     logger.warn({ err }, 'Error finding issues');
     return [];
   }
@@ -601,7 +624,8 @@ export async function addReviewers(
   );
 }
 
-export /* istanbul ignore next */ function deleteLabel(): never {
+/* istanbul ignore next */
+export function deleteLabel(): never {
   throw new Error('deleteLabel not implemented');
 }
 
@@ -629,7 +653,7 @@ export function ensureCommentRemoval({
 
 // Creates PR and returns PR number
 export async function createPr({
-  branchName,
+  sourceBranch,
   targetBranch,
   prTitle: title,
   prBody: description,
@@ -659,7 +683,7 @@ export async function createPr({
     description: sanitize(description),
     source: {
       branch: {
-        name: branchName,
+        name: sourceBranch,
       },
     },
     destination: {
@@ -672,7 +696,7 @@ export async function createPr({
   };
 
   try {
-    const prInfo = (
+    const prRes = (
       await bitbucketHttp.postJson<PrResponse>(
         `/2.0/repositories/${config.repository}/pullrequests`,
         {
@@ -680,11 +704,7 @@ export async function createPr({
         }
       )
     ).body;
-    // TODO: fix types
-    const pr: Pr = {
-      number: prInfo.id,
-      displayNumber: `Pull Request #${prInfo.id}`,
-    } as any;
+    const pr = utils.prInfo(prRes);
     // istanbul ignore if
     if (config.prList) {
       config.prList.push(pr);

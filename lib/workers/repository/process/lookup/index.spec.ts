@@ -1,5 +1,5 @@
 import nock from 'nock';
-import { getConfig, mocked, partial } from '../../../../../test/util';
+import { getConfig, getName, mocked, partial } from '../../../../../test/util';
 import qJson from '../../../../config/npm/__fixtures__/01.json';
 import helmetJson from '../../../../config/npm/__fixtures__/02.json';
 import coffeelintJson from '../../../../config/npm/__fixtures__/coffeelint.json';
@@ -10,8 +10,9 @@ import webpackJson from '../../../../config/npm/__fixtures__/webpack.json';
 import { CONFIG_VALIDATION } from '../../../../constants/error-messages';
 import * as datasourceDocker from '../../../../datasource/docker';
 import { id as datasourceDockerId } from '../../../../datasource/docker';
-import * as datasourceGitSubmodules from '../../../../datasource/git-submodules';
-import { id as datasourceGitSubmodulesId } from '../../../../datasource/git-submodules';
+import * as datasourceGitRefs from '../../../../datasource/git-refs';
+import { id as datasourceGitRefsId } from '../../../../datasource/git-refs';
+import * as datasourceGithubReleases from '../../../../datasource/github-releases';
 import { id as datasourceGithubTagsId } from '../../../../datasource/github-tags';
 import { id as datasourceNpmId } from '../../../../datasource/npm';
 import { id as datasourcePackagistId } from '../../../../datasource/packagist';
@@ -21,23 +22,28 @@ import { id as gitVersioningId } from '../../../../versioning/git';
 import { id as npmVersioningId } from '../../../../versioning/npm';
 import { id as pep440VersioningId } from '../../../../versioning/pep440';
 import { id as poetryVersioningId } from '../../../../versioning/poetry';
+import type { LookupUpdateConfig } from './types';
 import * as lookup from '.';
 
 jest.mock('../../../../datasource/docker');
-jest.mock('../../../../datasource/git-submodules');
+jest.mock('../../../../datasource/git-refs');
+jest.mock('../../../../datasource/github-releases');
 
 qJson.latestVersion = '1.4.1';
 
 const docker = mocked(datasourceDocker) as any;
 docker.defaultRegistryUrls = ['https://index.docker.io'];
-const gitSubmodules = mocked(datasourceGitSubmodules);
+const gitRefs = mocked(datasourceGitRefs);
+const githubReleases = mocked(datasourceGithubReleases);
 
-let config: lookup.LookupUpdateConfig;
+Object.assign(githubReleases, { defaultRegistryUrls: ['https://github.com'] });
 
-describe('workers/repository/process/lookup', () => {
+let config: LookupUpdateConfig;
+
+describe(getName(__filename), () => {
   beforeEach(() => {
     // TODO: fix types
-    config = partial<lookup.LookupUpdateConfig>(getConfig());
+    config = partial<LookupUpdateConfig>(getConfig());
     config.manager = 'npm';
     config.versioning = npmVersioningId;
     config.rangeStrategy = 'replace';
@@ -45,6 +51,11 @@ describe('workers/repository/process/lookup', () => {
   });
 
   describe('.lookupUpdates()', () => {
+    it('returns null if unknown datasource', async () => {
+      config.depName = 'some-dep';
+      config.datasource = 'does not exist';
+      expect((await lookup.lookupUpdates(config)).updates).toEqual([]);
+    });
     it('returns rollback for pinned version', async () => {
       config.currentValue = '0.9.99';
       config.depName = 'q';
@@ -74,6 +85,7 @@ describe('workers/repository/process/lookup', () => {
       config.rangeStrategy = 'update-lockfile';
       config.depName = 'q';
       config.datasource = datasourceNpmId;
+      config.separateMinorPatch = true;
       config.lockedVersion = '0.4.0';
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       expect((await lookup.lookupUpdates(config)).updates).toMatchSnapshot();
@@ -113,26 +125,6 @@ describe('workers/repository/process/lookup', () => {
       expect(res.updates).toMatchSnapshot();
       expect(res.updates).toHaveLength(1);
     });
-    it('returns only one update if automerging', async () => {
-      config.automerge = true;
-      config.currentValue = '0.4.0';
-      config.rangeStrategy = 'pin';
-      config.depName = 'q';
-      config.datasource = datasourceNpmId;
-      nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
-      const res = await lookup.lookupUpdates(config);
-      expect(res.updates).toMatchSnapshot();
-      expect(res.updates).toHaveLength(1);
-    });
-    it('returns only one update if automerging major', async () => {
-      config.major = { automerge: true };
-      config.currentValue = '^0.4.0';
-      config.rangeStrategy = 'pin';
-      config.depName = 'q';
-      config.datasource = datasourceNpmId;
-      nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
-      expect((await lookup.lookupUpdates(config)).updates).toMatchSnapshot();
-    });
     it('returns both updates if automerging minor', async () => {
       config.minor = { automerge: true };
       config.currentValue = '^0.4.0';
@@ -158,7 +150,7 @@ describe('workers/repository/process/lookup', () => {
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       expect((await lookup.lookupUpdates(config)).updates).toHaveLength(1);
     });
-    it('enforces allowedVersions with negativee regex', async () => {
+    it('enforces allowedVersions with negative regex', async () => {
       config.currentValue = '0.4.0';
       config.allowedVersions = '!/^1/';
       config.depName = 'q';
@@ -194,7 +186,7 @@ describe('workers/repository/process/lookup', () => {
         Error(CONFIG_VALIDATION)
       );
     });
-    it('returns minor update if separate patches not configured', async () => {
+    it('returns patch update even if separate patches not configured', async () => {
       config.currentValue = '0.9.0';
       config.rangeStrategy = 'pin';
       config.depName = 'q';
@@ -203,21 +195,8 @@ describe('workers/repository/process/lookup', () => {
       const res = await lookup.lookupUpdates(config);
       expect(res.updates).toMatchSnapshot();
       expect(res.updates).toHaveLength(2);
-      expect(res.updates[0].updateType).not.toEqual('patch');
-      expect(res.updates[1].updateType).not.toEqual('patch');
-    });
-    it('returns patch update if automerging patch', async () => {
-      config.patch = {
-        automerge: true,
-      };
-      config.currentValue = '0.9.0';
-      config.rangeStrategy = 'pin';
-      config.depName = 'q';
-      config.datasource = datasourceNpmId;
-      nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
-      const res = await lookup.lookupUpdates(config);
-      expect(res.updates).toMatchSnapshot();
       expect(res.updates[0].updateType).toEqual('patch');
+      expect(res.updates[1].updateType).toEqual('major');
     });
     it('returns minor update if automerging both patch and minor', async () => {
       config.patch = {
@@ -233,7 +212,7 @@ describe('workers/repository/process/lookup', () => {
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       const res = await lookup.lookupUpdates(config);
       expect(res.updates).toMatchSnapshot();
-      expect(res.updates[0].updateType).toEqual('minor');
+      expect(res.updates[0].updateType).toEqual('patch');
     });
     it('returns patch update if separateMinorPatch', async () => {
       config.separateMinorPatch = true;
@@ -275,7 +254,7 @@ describe('workers/repository/process/lookup', () => {
     });
     it('uses minimum version for vulnerabilityAlerts', async () => {
       config.currentValue = '1.0.0';
-      config.vulnerabilityAlert = true;
+      config.isVulnerabilityAlert = true;
       config.depName = 'q';
       config.datasource = datasourceNpmId;
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
@@ -363,6 +342,15 @@ describe('workers/repository/process/lookup', () => {
     it('ignores minor ranged versions when not pinning', async () => {
       config.rangeStrategy = 'replace';
       config.currentValue = '^1.0.0';
+      config.depName = 'q';
+      config.datasource = datasourceNpmId;
+      nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      expect((await lookup.lookupUpdates(config)).updates).toHaveLength(0);
+    });
+    it('ignores minor ranged versions when locked', async () => {
+      config.rangeStrategy = 'replace';
+      config.currentValue = '^1.0.0';
+      config.lockedVersion = '1.1.0';
       config.depName = 'q';
       config.datasource = datasourceNpmId;
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
@@ -639,6 +627,26 @@ describe('workers/repository/process/lookup', () => {
       nock('https://registry.npmjs.org').get('/vue').reply(200, vueJson);
       expect((await lookup.lookupUpdates(config)).updates).toHaveLength(0);
     });
+    it('should ignore unstable versions from datasource', async () => {
+      config.currentValue = '1.4.4';
+      config.depName = 'some/action';
+      config.datasource = datasourceGithubReleases.id;
+      githubReleases.getReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '1.4.4',
+          },
+          {
+            version: '2.0.0',
+          },
+          {
+            version: '2.1.0',
+            isStable: false,
+          },
+        ],
+      });
+      expect((await lookup.lookupUpdates(config)).updates).toMatchSnapshot();
+    });
     it('should allow unstable versions if the ignoreUnstable=false', async () => {
       config.currentValue = '2.5.16';
       config.ignoreUnstable = false;
@@ -815,6 +823,7 @@ describe('workers/repository/process/lookup', () => {
       config.rangeStrategy = 'bump';
       config.currentValue = '~1.0.0';
       config.depName = 'q';
+      config.separateMinorPatch = true;
       config.datasource = datasourceNpmId;
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       expect((await lookup.lookupUpdates(config)).updates).toMatchSnapshot();
@@ -841,6 +850,7 @@ describe('workers/repository/process/lookup', () => {
       config.currentValue = '>=0.9.0';
       config.depName = 'q';
       config.datasource = datasourceNpmId;
+      config.separateMajorMinor = false;
       nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       expect((await lookup.lookupUpdates(config)).updates).toMatchSnapshot();
     });
@@ -945,7 +955,7 @@ describe('workers/repository/process/lookup', () => {
       nock('https://registry.npmjs.org').get('/q2').reply(200, returnJson);
       const res = await lookup.lookupUpdates(config);
       expect(res).toMatchSnapshot();
-      expect(res.updates[0].toVersion).toEqual('1.4.0');
+      expect(res.updates[0].newVersion).toEqual('1.4.0');
     });
     it('is deprecated', async () => {
       config.currentValue = '1.3.0';
@@ -961,7 +971,7 @@ describe('workers/repository/process/lookup', () => {
       nock('https://registry.npmjs.org').get('/q3').reply(200, returnJson);
       const res = await lookup.lookupUpdates(config);
       expect(res).toMatchSnapshot();
-      expect(res.updates[0].toVersion).toEqual('1.4.1');
+      expect(res.updates[0].newVersion).toEqual('1.4.1');
     });
     it('skips unsupported values', async () => {
       config.currentValue = 'alpine';
@@ -1129,14 +1139,32 @@ describe('workers/repository/process/lookup', () => {
     it('handles git submodule update', async () => {
       config.depName = 'some-path';
       config.versioning = gitVersioningId;
-      config.datasource = datasourceGitSubmodulesId;
-      gitSubmodules.getReleases.mockResolvedValueOnce({
+      config.datasource = datasourceGitRefsId;
+      config.currentDigest = 'some-digest';
+      gitRefs.getReleases.mockResolvedValueOnce({
         releases: [
           {
-            version: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+            version: 'master',
           },
         ],
       });
+      gitRefs.getDigest.mockResolvedValueOnce(
+        '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+      );
+      const res = await lookup.lookupUpdates(config);
+      expect(res).toMatchSnapshot();
+    });
+    it('handles sourceUrl packageRules with version restrictions', async () => {
+      config.currentValue = '0.9.99';
+      config.depName = 'q';
+      config.datasource = datasourceNpmId;
+      config.packageRules = [
+        {
+          matchSourceUrlPrefixes: ['https://github.com/kriskowal/q'],
+          allowedVersions: '< 1.4.0',
+        },
+      ];
+      nock('https://registry.npmjs.org').get('/q').reply(200, qJson);
       const res = await lookup.lookupUpdates(config);
       expect(res).toMatchSnapshot();
     });

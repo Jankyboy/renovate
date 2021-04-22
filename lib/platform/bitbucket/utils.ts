@@ -2,7 +2,7 @@ import url from 'url';
 import { BranchStatus, PrState } from '../../types';
 import { HttpOptions, HttpPostOptions, HttpResponse } from '../../util/http';
 import { BitbucketHttp } from '../../util/http/bitbucket';
-import { Pr } from '../common';
+import type { Pr } from '../types';
 
 const bitbucketHttp = new BitbucketHttp();
 
@@ -14,6 +14,8 @@ export interface Config {
   prList: Pr[];
   repository: string;
   username: string;
+  userUuid: string;
+  ignorePrAuthor: boolean;
 }
 
 export interface PagedResult<T = any> {
@@ -130,9 +132,7 @@ interface Files {
   }[];
 }
 
-export /* istanbul ignore next */ function isConflicted(
-  files: Files[]
-): boolean {
+export function isConflicted(files: Files[]): boolean {
   for (const file of files) {
     for (const chunk of file.chunks) {
       for (const change of chunk.changes) {
@@ -172,13 +172,14 @@ export interface PrResponse {
 export function prInfo(pr: PrResponse): Pr {
   return {
     number: pr.id,
-    body: pr.summary ? pr.summary.raw : /* istanbul ignore next */ undefined,
-    branchName: pr.source.branch.name,
-    targetBranch: pr.destination.branch.name,
+    displayNumber: `Pull Request #${pr.id}`,
+    body: pr.summary?.raw,
+    sourceBranch: pr.source?.branch?.name,
+    targetBranch: pr.destination?.branch?.name,
     title: pr.title,
-    state: prStates.closed.includes(pr.state)
+    state: prStates.closed?.includes(pr.state)
       ? /* istanbul ignore next */ PrState.Closed
-      : pr.state.toLowerCase(),
+      : pr.state?.toLowerCase(),
     createdAt: pr.created_on,
   };
 }

@@ -1,13 +1,19 @@
-import path from 'path';
+import is from '@sindresorhus/is';
 import jsonValidator from 'json-dup-key-validator';
 import JSON5 from 'json5';
+import upath from 'upath';
 
-import { RenovateConfig, mergeChildConfig } from '../../../config';
+import { mergeChildConfig } from '../../../config';
 import { configFileNames } from '../../../config/app-strings';
 import { decryptConfig } from '../../../config/decrypt';
 import { migrateAndValidate } from '../../../config/migrate-validate';
+import { migrateConfig } from '../../../config/migration';
 import * as presets from '../../../config/presets';
-import { CONFIG_VALIDATION } from '../../../constants/error-messages';
+import type { RenovateConfig } from '../../../config/types';
+import {
+  CONFIG_VALIDATION,
+  REPOSITORY_CHANGED,
+} from '../../../constants/error-messages';
 import * as npmApi from '../../../datasource/npm';
 import { logger } from '../../../logger';
 import { readLocalFile } from '../../../util/fs';
@@ -15,7 +21,6 @@ import { getFileList } from '../../../util/git';
 import * as hostRules from '../../../util/host-rules';
 import { checkOnboardingBranch } from '../onboarding/branch';
 import { RepoFileConfig } from './common';
-import { flattenPackageRules } from './flatten';
 import { detectSemanticCommits } from './semantic';
 
 export async function detectRepoFileConfig(): Promise<RepoFileConfig> {
@@ -53,11 +58,16 @@ export async function detectRepoFileConfig(): Promise<RepoFileConfig> {
   } else {
     let rawFileContents = await readLocalFile(configFileName, 'utf8');
     // istanbul ignore if
+    if (!rawFileContents) {
+      logger.warn({ configFileName }, 'Null contents when reading config file');
+      throw new Error(REPOSITORY_CHANGED);
+    }
+    // istanbul ignore if
     if (!rawFileContents.length) {
       rawFileContents = '{}';
     }
 
-    const fileType = path.extname(configFileName);
+    const fileType = upath.extname(configFileName);
 
     if (fileType === '.json5') {
       try {
@@ -129,7 +139,7 @@ export function checkForRepoConfigError(repoConfig: RepoFileConfig): void {
     return;
   }
   const error = new Error(CONFIG_VALIDATION);
-  error.configFile = repoConfig.configFileName;
+  error.location = repoConfig.configFileName;
   error.validationError = repoConfig.configFileParseError.validationError;
   error.validationMessage = repoConfig.configFileParseError.validationMessage;
   throw error;
@@ -141,14 +151,19 @@ export async function mergeRenovateConfig(
 ): Promise<RenovateConfig> {
   let returnConfig = { ...config };
   const repoConfig = await detectRepoFileConfig();
+  const configFileParsed = repoConfig?.configFileParsed || {};
+  if (is.nonEmptyArray(returnConfig.extends)) {
+    configFileParsed.extends = [
+      ...returnConfig.extends,
+      ...(configFileParsed.extends || []),
+    ];
+    delete returnConfig.extends;
+  }
   checkForRepoConfigError(repoConfig);
-  const migratedConfig = await migrateAndValidate(
-    config,
-    repoConfig?.configFileParsed || {}
-  );
+  const migratedConfig = await migrateAndValidate(config, configFileParsed);
   if (migratedConfig.errors.length) {
     const error = new Error(CONFIG_VALIDATION);
-    error.configFile = repoConfig.configFileName;
+    error.location = repoConfig.configFileName;
     error.validationError =
       'The renovate configuration file contains some invalid settings';
     error.validationMessage = migratedConfig.errors
@@ -165,26 +180,29 @@ export async function mergeRenovateConfig(
   delete migratedConfig.warnings;
   logger.debug({ config: migratedConfig }, 'migrated config');
   // Decrypt before resolving in case we need npm authentication for any presets
-  const decryptedConfig = decryptConfig(migratedConfig, config.privateKey);
+  const decryptedConfig = decryptConfig(migratedConfig);
   // istanbul ignore if
-  if (decryptedConfig.npmrc) {
+  if (is.string(decryptedConfig.npmrc)) {
     logger.debug('Found npmrc in decrypted config - setting');
     npmApi.setNpmrc(decryptedConfig.npmrc);
   }
   // Decrypt after resolving in case the preset contains npm authentication instead
-  const resolvedConfig = decryptConfig(
-    await presets.resolveConfigPresets(decryptedConfig, config),
-    config.privateKey
+  let resolvedConfig = decryptConfig(
+    await presets.resolveConfigPresets(decryptedConfig, config)
   );
-  delete resolvedConfig.privateKey;
   logger.trace({ config: resolvedConfig }, 'resolved config');
+  const migrationResult = migrateConfig(resolvedConfig);
+  if (migrationResult.isMigrated) {
+    logger.debug('Resolved config needs migrating');
+    logger.trace({ config: resolvedConfig }, 'resolved config after migrating');
+    resolvedConfig = migrationResult.migratedConfig;
+  }
   // istanbul ignore if
-  if (resolvedConfig.npmrc) {
+  if (is.string(resolvedConfig.npmrc)) {
     logger.debug(
       'Ignoring any .npmrc files in repository due to configured npmrc'
     );
     npmApi.setNpmrc(resolvedConfig.npmrc);
-    resolvedConfig.ignoreNpmrcFile = true;
   }
   // istanbul ignore if
   if (resolvedConfig.hostRules) {
@@ -203,7 +221,6 @@ export async function mergeRenovateConfig(
   }
   returnConfig = mergeChildConfig(returnConfig, resolvedConfig);
   returnConfig.renovateJsonPresent = true;
-  returnConfig.packageRules = flattenPackageRules(returnConfig.packageRules);
   // istanbul ignore if
   if (returnConfig.ignorePaths?.length) {
     logger.debug(

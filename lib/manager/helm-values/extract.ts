@@ -1,7 +1,8 @@
 import yaml from 'js-yaml';
 import { logger } from '../../logger';
-import { PackageDependency, PackageFile } from '../common';
+import { id as dockerVersioning } from '../../versioning/docker';
 import { getDep } from '../dockerfile/extract';
+import type { PackageDependency, PackageFile } from '../types';
 
 import {
   HelmDockerImageDependency,
@@ -19,6 +20,9 @@ function getHelmDep({
 }): PackageDependency {
   const dep = getDep(`${registry}${repository}:${tag}`, false);
   dep.replaceString = tag;
+  dep.versioning = dockerVersioning;
+  dep.autoReplaceStringTemplate =
+    '{{newValue}}{{#if newDigest}}@{{newDigest}}{{/if}}';
   return dep;
 }
 
@@ -56,7 +60,8 @@ export function extractPackageFile(content: string): PackageFile {
   try {
     // a parser that allows extracting line numbers would be preferable, with
     // the current approach we need to match anything we find again during the update
-    parsedContent = yaml.safeLoad(content, { json: true });
+    // TODO: fix me
+    parsedContent = yaml.safeLoad(content, { json: true }) as any;
   } catch (err) {
     logger.debug({ err }, 'Failed to parse helm-values YAML');
     return null;

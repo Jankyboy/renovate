@@ -1,6 +1,7 @@
+import { parse } from '@iarna/toml';
 import is from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { parse } from 'toml';
+import { TEMPORARY_ERROR } from '../../constants/error-messages';
 import { logger } from '../../logger';
 import { ExecOptions, exec } from '../../util/exec';
 import {
@@ -10,19 +11,19 @@ import {
   writeLocalFile,
 } from '../../util/fs';
 import { find } from '../../util/host-rules';
-import {
+import type {
   UpdateArtifact,
   UpdateArtifactsConfig,
   UpdateArtifactsResult,
-} from '../common';
-import { PoetryFile, PoetrySource } from './types';
+} from '../types';
+import type { PoetryFile, PoetrySource } from './types';
 
 function getPythonConstraint(
   existingLockFileContent: string,
   config: UpdateArtifactsConfig
 ): string | undefined | null {
-  const { compatibility = {} } = config;
-  const { python } = compatibility;
+  const { constraints = {} } = config;
+  const { python } = constraints;
 
   if (python) {
     logger.debug('Using python constraint from config');
@@ -120,8 +121,9 @@ export async function updateArtifacts({
       }
     }
     const tagConstraint = getPythonConstraint(existingLockFileContent, config);
-    const poetryRequirement = config.compatibility?.poetry || 'poetry';
-    const poetryInstall = 'pip install ' + quote(poetryRequirement);
+    const poetryRequirement = config.constraints?.poetry || 'poetry';
+    const poetryInstall =
+      'pip install ' + poetryRequirement.split(' ').map(quote).join(' ');
     const extraEnv = getSourceCredentialVars(
       newPackageFileContent,
       packageFileName
@@ -131,7 +133,7 @@ export async function updateArtifacts({
       cwdFile: packageFileName,
       extraEnv,
       docker: {
-        image: 'renovate/python',
+        image: 'python',
         tagConstraint,
         tagScheme: 'poetry',
         preCommands: [poetryInstall],
@@ -153,6 +155,10 @@ export async function updateArtifacts({
       },
     ];
   } catch (err) {
+    // istanbul ignore if
+    if (err.message === TEMPORARY_ERROR) {
+      throw err;
+    }
     logger.debug({ err }, `Failed to update ${lockFileName} file`);
     return [
       {

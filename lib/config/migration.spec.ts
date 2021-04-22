@@ -1,8 +1,12 @@
+import { getName } from '../../test/util';
 import { PLATFORM_TYPE_GITHUB } from '../constants/platforms';
 import { getConfig } from './defaults';
 import * as configMigration from './migration';
 import { MigratedConfig } from './migration';
-import { RenovateSharedConfig, RenovateConfig as _RenovateConfig } from '.';
+import type {
+  RenovateSharedConfig,
+  RenovateConfig as _RenovateConfig,
+} from './types';
 
 const defaultConfig = getConfig();
 
@@ -10,7 +14,7 @@ interface RenovateConfig extends _RenovateConfig {
   node?: RenovateSharedConfig & { supportPolicy?: unknown };
 }
 
-describe('config/migration', () => {
+describe(getName(__filename), () => {
   describe('migrateConfig(config, parentConfig)', () => {
     it('migrates config', () => {
       const config: RenovateConfig = {
@@ -26,23 +30,37 @@ describe('config/migration', () => {
             password: 'some-password',
           },
         ],
-        extends: [':js-app', 'config:library', ':masterIssue'],
+        compatibility: {
+          python: '3.7',
+        },
+        extends: [
+          ':automergeBranchMergeCommit',
+          'default:js-app',
+          'config:library',
+          ':masterIssue',
+          'helpers:oddIsUnstable',
+        ],
         maintainYarnLock: true,
         onboarding: 'false' as never,
         multipleMajorPrs: true,
         gitFs: false,
+        ignoreNpmrcFile: true,
         separateMajorReleases: true,
         separatePatchReleases: true,
         suppressNotifications: ['lockFileErrors', 'prEditNotification'],
         automerge: 'none' as never,
         automergeMajor: false,
+        binarySource: 'auto',
         automergeMinor: true,
         automergePatch: true,
         masterIssue: 'true',
         masterIssueTitle: 'foo',
         gomodTidy: true,
         upgradeInRange: true,
+        trustLevel: 'high',
         automergeType: 'branch-push',
+        branchName:
+          '{{{branchPrefix}}}{{{managerBranchPrefix}}}{{{branchTopic}}}{{{baseDir}}}',
         baseBranch: 'next',
         managerBranchPrefix: 'foo',
         branchPrefix: 'renovate/{{parentDir}}-',
@@ -67,10 +85,9 @@ describe('config/migration', () => {
         meteor: true,
         autodiscover: 'true' as never,
         schedule: 'on the last day of the month' as never,
-        commitMessage: '{{semanticPrefix}}some commit message',
+        commitMessage: '{{semanticPrefix}}some commit message {{depNameShort}}',
         prTitle: '{{semanticPrefix}}some pr title',
         semanticPrefix: 'fix(deps): ',
-        commitMessageExtra: '{{currentVersion}} something',
         pathRules: [
           {
             paths: ['examples/**'],
@@ -99,6 +116,15 @@ describe('config/migration', () => {
             packageNames: ['guava'],
             versionScheme: 'maven',
           },
+          {
+            packageNames: ['foo'],
+            packageRules: [
+              {
+                depTypeList: ['bar'],
+                automerge: true,
+              },
+            ],
+          },
         ],
         exposeEnv: true,
         lockFileMaintenance: {
@@ -115,7 +141,7 @@ describe('config/migration', () => {
           pathRules: [
             {
               paths: ['node/**'],
-              extends: ['node'],
+              extends: 'node',
             },
           ],
         },
@@ -139,7 +165,7 @@ describe('config/migration', () => {
       expect(isMigrated).toBe(true);
       expect(migratedConfig.depTypes).not.toBeDefined();
       expect(migratedConfig.automerge).toEqual(false);
-      expect(migratedConfig.packageRules).toHaveLength(8);
+      expect(migratedConfig.packageRules).toHaveLength(9);
       expect(migratedConfig.hostRules).toHaveLength(1);
     });
     it('migrates before and after schedules', () => {
@@ -301,6 +327,24 @@ describe('config/migration', () => {
         migratedConfig.lockFileMaintenance.packageRules[0].respectLatest
       ).toBe(false);
     });
+
+    it('migrates packageRules objects', () => {
+      const config = {
+        packageRules: {
+          packageNames: ['typescript'],
+          updateTypes: ['major'],
+          commitMessage:
+            'fix(package): update peerDependency to accept typescript ^{{newValueMajor}} {{newValueMajor}}',
+        },
+      } as any;
+      const { isMigrated, migratedConfig } = configMigration.migrateConfig(
+        config,
+        defaultConfig
+      );
+      expect(isMigrated).toBe(true);
+      expect(migratedConfig).toMatchSnapshot();
+      expect(migratedConfig.packageRules).toHaveLength(1);
+    });
     it('migrates node to travis', () => {
       const config: RenovateConfig = {
         node: {
@@ -431,6 +475,157 @@ describe('config/migration', () => {
       res = configMigration.migrateConfig(config);
       expect(res.isMigrated).toBe(false);
       expect(res.migratedConfig).toMatchObject({ semanticCommits: 'disabled' });
+    });
+
+    it('it migrates preset strings to array', () => {
+      let config: RenovateConfig;
+      let res: MigratedConfig;
+
+      config = { extends: ':js-app' } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({ extends: ['config:js-app'] });
+
+      config = { extends: 'foo' } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({ extends: ['foo'] });
+
+      config = { extends: ['foo', ':js-app', 'bar'] } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'config:js-app', 'bar'],
+      });
+    });
+
+    it('it migrates unpublishSafe', () => {
+      let config: RenovateConfig;
+      let res: MigratedConfig;
+
+      config = { unpublishSafe: true };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['npm:unpublishSafe'],
+      });
+
+      config = { unpublishSafe: true, extends: 'foo' } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'npm:unpublishSafe'],
+      });
+
+      config = { unpublishSafe: true, extends: [] };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['npm:unpublishSafe'],
+      });
+
+      config = { unpublishSafe: true, extends: ['foo', 'bar'] };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'bar', 'npm:unpublishSafe'],
+      });
+
+      config = {
+        unpublishSafe: true,
+        extends: ['foo', ':unpublishSafe', 'bar'],
+      };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'npm:unpublishSafe', 'bar'],
+      });
+
+      config = {
+        unpublishSafe: true,
+        extends: ['foo', 'default:unpublishSafe', 'bar'],
+      };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'npm:unpublishSafe', 'bar'],
+      });
+
+      config = {
+        unpublishSafe: false,
+        extends: ['foo', 'bar'],
+      };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'bar'],
+      });
+
+      config = {
+        unpublishSafe: true,
+        extends: ['foo', 'bar'],
+      };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: ['foo', 'bar', 'npm:unpublishSafe'],
+      });
+
+      config = {
+        unpublishSafe: true,
+        extends: [':unpublishSafeDisabled'],
+      };
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig).toMatchObject({
+        extends: [':unpublishSafeDisabled', 'npm:unpublishSafe'],
+      });
+    });
+    it('migrates combinations of packageRules', () => {
+      let config: RenovateConfig;
+      let res: MigratedConfig;
+
+      config = {
+        packages: [{ matchPackagePatterns: ['*'] }],
+        packageRules: { matchPackageNames: [] },
+      } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig.packageRules).toHaveLength(2);
+
+      config = {
+        packageRules: { matchPpackageNames: [] },
+        packages: [{ matchPackagePatterns: ['*'] }],
+      } as never;
+      res = configMigration.migrateConfig(config);
+      expect(res.isMigrated).toBe(true);
+      expect(res.migratedConfig.packageRules).toHaveLength(2);
+    });
+    it('it migrates packageRules', () => {
+      const config: RenovateConfig = {
+        packageRules: [
+          {
+            paths: ['package.json'],
+            languages: ['python'],
+            baseBranchList: ['master'],
+            managers: ['dockerfile'],
+            datasources: ['orb'],
+            depTypeList: ['peerDependencies'],
+            packageNames: ['foo'],
+            packagePatterns: ['^bar'],
+            excludePackageNames: ['baz'],
+            excludePackagePatterns: ['^baz'],
+            sourceUrlPrefixes: ['https://github.com/vuejs/vue'],
+            updateTypes: ['major'],
+          },
+        ],
+      };
+      const { isMigrated, migratedConfig } = configMigration.migrateConfig(
+        config,
+        defaultConfig
+      );
+      expect(isMigrated).toBe(true);
+      expect(migratedConfig).toMatchSnapshot();
     });
   });
 });
