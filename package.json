@@ -239,7 +239,7 @@
     "husky": "4.3.0",
     "jest": "26.4.2",
     "jest-circus": "26.4.2",
-    "jest-extended": "0.11.5",
+    "jest-extended": "1.0.0",
     "jest-junit": "11.1.0",
     "jest-mock-extended": "1.0.10",
     "jest-silent-reporter": "0.2.1",
